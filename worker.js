@@ -50,6 +50,8 @@ async function onUpdate (update) {
     await onMessage(update.message)
   } else if ('inline_query' in update) {
     await onInlineQuery(update.inline_query)
+  } else if ('chosen_inline_result' in update) {
+    await onChosenInlineResult(update.chosen_inline_result)
   }
 }
 
@@ -76,24 +78,24 @@ async function sendPlainText (chatId, text) {
 /**
  * Handle incoming query
  * https://core.telegram.org/bots/api#InlineQuery
+ *
+ * Answers instantly with the original link so the user never waits for
+ * service probing. The working embed service is resolved afterwards in
+ * onChosenInlineResult, which edits the sent message once probing finishes.
  */
 async function onInlineQuery (inlineQuery) {
   const originalURL = inlineQuery.query;
-  const {url, title} = await getFixedURL(originalURL)
   const results = [({
     type: 'article',
     id: crypto.randomUUID(),
     title: '☞ CLICK TO SEND',
-    //url: url,
     hide_url: true,
-    //thumbnail_url: originalURL,
-    description: title,
+    description: 'Resolving best embed service…',
     input_message_content: {
-      message_text: `[${title}](${url})`,
-      parse_mode: "markdown",
+      message_text: originalURL,
       link_preview_options: {
         is_disabled: false,
-        url: url
+        url: originalURL
       }
     }
   })]
@@ -101,11 +103,52 @@ async function onInlineQuery (inlineQuery) {
   return SendInlineQuery(inlineQuery.id, res)
 }
 
+/**
+ * Handle a result the user picked and sent to a chat. Probes all candidate
+ * services in parallel (no UI blocking — the message is already out) and edits
+ * the message to the winning service link, triggering a fresh link preview.
+ * Requires inline feedback to be enabled via @BotFather (/setinlinefeedback).
+ */
+async function onChosenInlineResult (chosen) {
+  try {
+    if (!chosen.inline_message_id || !chosen.query) return
+    console.log("Chosen inline result: ", chosen.query)
+    const { url, title } = await getFixedURL(chosen.query)
+    if (!title || title === 'Embed Link') {
+      console.log("No embed service found, keeping original link")
+      return
+    }
+    await editInlineMessage(chosen.inline_message_id, `[${title}](${url})`, url)
+    console.log("Message edited to: ", url)
+  } catch (e) {
+    console.log("Failed to resolve/edit embed link: ", e.message || e)
+  }
+}
+
+/**
+ * Edit an inline-mode message and point its link preview at the new URL.
+ * https://core.telegram.org/bots/api#editmessagetext
+ */
+async function editInlineMessage (inlineMessageId, text, url) {
+  return (await fetch(apiUrl('editMessageText', {
+    inline_message_id: inlineMessageId,
+    text,
+    parse_mode: 'markdown',
+    link_preview_options: JSON.stringify({
+      is_disabled: false,
+      url
+    })
+  }))).json()
+}
+
 async function getFixedURL (originalURL) {
   console.log("Original URL: ", originalURL)
   var url = new URL(originalURL)
   console.log("Hostname: ", url.hostname)
   console.log("List URL: ", LIST_URL)
+  if (isTikTokShortLink(url)) {
+    url = await canonicalizeTikTokShortLink(url)
+  }
   const response = await fetch(LIST_URL);
   if (!response.ok) {
     throw new Error(`Fetch: ${response.status}`);
@@ -152,37 +195,79 @@ function rewriteUrl (url, sourceRegex, targetHost) {
   return rewritten
 }
 
-async function selectTarget (url, sourceRegex, candidates) {
-  // Tier 1 — deterministic: a candidate whose rewritten URL serves a direct video
-  // file is guaranteed to produce a video preview in Telegram. Never a false negative.
-  for (const candidate of candidates) {
-    const probeUrl = rewriteUrl(url, sourceRegex, candidate)
-    console.log("Direct video file probe: ", probeUrl.toString())
-    if (await probeDirectVideoFile(probeUrl.toString())) {
-      console.log("Direct video file found: ", candidate)
-      return candidate
+/**
+ * TikTok share links (vm.tiktok.com/CODE, vt.tiktok.com/CODE, tiktok.com/t/CODE)
+ * are resolved to their canonical www.tiktok.com/@user/video/ID form before any
+ * service selection, so every embed service receives its primary URL format.
+ */
+function isTikTokShortLink (url) {
+  return /^(vm|vt)\.tiktok\.com$/i.test(url.hostname) || /^\/t\/[^/]+\/?$/i.test(url.pathname)
+}
+
+async function canonicalizeTikTokShortLink (url) {
+  try {
+    console.log("Resolving TikTok short link: ", url.toString())
+    const response = await fetchWithTimeout(url.toString(), {
+      method: 'GET',
+      headers: {
+        'User-Agent': CRAWLER_UA,
+        'Range': 'bytes=0-0'
+      }
+    })
+    if (response.body) {
+      response.body.cancel()
     }
+    const resolved = new URL(response.url)
+    if (/tiktok\.com$/i.test(resolved.hostname) && /\/video\/\d+/.test(resolved.pathname)) {
+      const canonical = new URL('https://www.tiktok.com' + resolved.pathname)
+      console.log("Canonical URL: ", canonical.toString())
+      return canonical
+    }
+    console.log("Short link did not resolve to a video: ", response.url)
+  } catch (e) {
+    console.log("Short link resolution failed: ", e.message || e)
+  }
+  return url
+}
+
+async function selectTarget (url, sourceRegex, candidates) {
+  const probeUrls = new Map(candidates.map(candidate => [candidate, rewriteUrl(url, sourceRegex, candidate).toString()]))
+  // Tier 1 — deterministic: a candidate whose rewritten URL serves a direct video
+  // file is guaranteed to produce a video preview in Telegram. All candidates are
+  // probed in parallel so total latency is one probe, not the sum of all.
+  const directChecks = await Promise.all(candidates.map(async candidate => {
+    console.log("Direct video file probe: ", probeUrls.get(candidate))
+    const ok = await probeDirectVideoFile(probeUrls.get(candidate))
+    return { candidate, ok }
+  }))
+  const directWinner = directChecks.find(result => result.ok)
+  if (directWinner) {
+    console.log("Direct video file found: ", directWinner.candidate)
+    return directWinner.candidate
   }
   // Tier 2 — best effort: HTML embed pages (og:video pointing to a playable file).
   // Only reached when no deterministic (direct file) candidate exists.
-  var imageOnly = null
-  for (const candidate of candidates) {
-    const probeUrl = rewriteUrl(url, sourceRegex, candidate)
-    console.log("Probing embed page: ", probeUrl.toString())
-    const tags = await probeEmbed(probeUrl.toString())
-    if (tags.video) {
-      console.log("Video embed found: ", candidate)
-      return candidate
-    }
-    if (tags.image && !imageOnly) {
-      console.log("Image-only embed found (fallback): ", candidate)
-      imageOnly = candidate
-    }
+  const pageChecks = await Promise.all(candidates.map(async candidate => {
+    console.log("Probing embed page: ", probeUrls.get(candidate))
+    const tags = await probeEmbed(probeUrls.get(candidate))
+    return { candidate, tags }
+  }))
+  const videoWinner = pageChecks.find(result => result.tags.video)
+  if (videoWinner) {
+    console.log("Video embed found: ", videoWinner.candidate)
+    return videoWinner.candidate
   }
-  return imageOnly
+  const imageWinner = pageChecks.find(result => result.tags.image)
+  if (imageWinner) {
+    console.log("Image-only embed found (fallback): ", imageWinner.candidate)
+  }
+  return imageWinner ? imageWinner.candidate : null
 }
 
-const EMBED_TIMEOUT_MS = 3000
+// Generous per-request budget: probing runs after the message has already been
+// sent (see onChosenInlineResult), so latency here never blocks the user. The
+// offload .../generate endpoint can need ~6s on cold start.
+const EMBED_TIMEOUT_MS = 8000
 const MAX_BODY_CHARS = 65536
 const CRAWLER_UA = 'TelegramBot-LinkPreview (like TwitterBot)'
 
