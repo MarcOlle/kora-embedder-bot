@@ -79,25 +79,41 @@ async function sendPlainText (chatId, text) {
  * Handle incoming query
  * https://core.telegram.org/bots/api#InlineQuery
  *
- * Answers instantly with the original link so the user never waits for
+ * Answers instantly with a placeholder message - the original link formatted as
+ * a clickable platform-name link (e.g. "TikTok") - so the user never waits for
  * service probing. The working embed service is resolved afterwards in
  * onChosenInlineResult, which edits the sent message once probing finishes.
  */
 async function onInlineQuery (inlineQuery) {
-  const originalURL = inlineQuery.query;
-  const results = [({
-    type: 'article',
-    id: crypto.randomUUID(),
-    title: '☞ CLICK TO SEND',
-    hide_url: true,
-    description: 'Resolving best embed service…',
-    input_message_content: {
-      message_text: originalURL,
+  const originalURL = inlineQuery.query
+  var label = null
+  try {
+    const url = new URL(originalURL)
+    const matched = matchEntry(url, await fetchList())
+    label = matched ? matched.name : url.hostname
+  } catch (e) {
+    console.log("Instant answer: not a URL or list unavailable: ", e.message || e)
+  }
+  var content
+  if (label !== null) {
+    content = {
+      message_text: `[${label}](${originalURL})`,
+      parse_mode: 'markdown',
       link_preview_options: {
         is_disabled: false,
         url: originalURL
       }
     }
+  } else {
+    // Not a URL (or list fetch failed): plain text, no preview options.
+    content = { message_text: originalURL }
+  }
+  const results = [({
+    type: 'article',
+    id: crypto.randomUUID(),
+    title: '☞ CLICK TO SEND',
+    description: 'Resolving best embed service…',
+    input_message_content: content
   })]
   const res = JSON.stringify(results)
   return SendInlineQuery(inlineQuery.id, res)
@@ -141,31 +157,37 @@ async function editInlineMessage (inlineMessageId, text, url) {
   }))).json()
 }
 
+async function fetchList () {
+  const response = await fetch(LIST_URL)
+  if (!response.ok) {
+    throw new Error(`Fetch: ${response.status}`)
+  }
+  return response.json()
+}
+
+function matchEntry (url, json) {
+  var matched = null
+  json.every(function (entry) {
+    const regex = new RegExp(entry.source, 'gi')
+    if (!regex.test(url.hostname)) {
+      return true
+    }
+    console.log('Regex detected: ', entry.source)
+    matched = entry
+    return false
+  })
+  return matched
+}
+
 async function getFixedURL (originalURL) {
   console.log("Original URL: ", originalURL)
   var url = new URL(originalURL)
   console.log("Hostname: ", url.hostname)
-  console.log("List URL: ", LIST_URL)
   if (isTikTokShortLink(url)) {
     url = await canonicalizeTikTokShortLink(url)
   }
-  const response = await fetch(LIST_URL);
-  if (!response.ok) {
-    throw new Error(`Fetch: ${response.status}`);
-  }
-  const json = await response.json();
-  console.log("JSON: ", JSON.stringify(json));
-  var title = "Embed Link"
-  var matched = null
-  json.every(function(entry) {
-    const regex = new RegExp(entry.source, "gi")
-    if (!regex.test(url.hostname)) {
-      return true
-    }
-    console.log("Regex detected: ", entry.source)
-    matched = entry
-    return false
-  })
+  const matched = matchEntry(url, await fetchList())
+  var title = 'Embed Link'
 
   if (matched) {
     const candidates = matched.targets || (matched.target ? [matched.target] : [])
@@ -269,7 +291,7 @@ async function selectTarget (url, sourceRegex, candidates) {
 // offload .../generate endpoint can need ~6s on cold start.
 const EMBED_TIMEOUT_MS = 8000
 const MAX_BODY_CHARS = 65536
-const CRAWLER_UA = 'TelegramBot-LinkPreview (like TwitterBot)'
+const CRAWLER_UA = 'TelegramBot (like TwitterBot)'
 
 async function fetchWithTimeout (url, options = {}) {
   const controller = new AbortController()
