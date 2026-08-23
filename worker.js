@@ -6,6 +6,8 @@ const TOKEN = ENV_BOT_TOKEN // Get it from @BotFather https://core.telegram.org/
 const SECRET = ENV_BOT_SECRET // A-Z, a-z, 0-9, _ and -
 const LIST_URL = ENV_LIST_URL
 const WEBHOOK = '/endpoint'
+// Shown in the inline-result description so you can always tell which build is live.
+const BOT_VERSION = '2026-08-24.1'
 
 /**
  * Wait for requests to the worker
@@ -103,38 +105,46 @@ async function sendPlainText (chatId, text) {
  * service probing. The working embed service is resolved afterwards in
  * onChosenInlineResult, which edits the sent message once probing finishes.
  */
+/**
+ * Build the instant placeholder content for a query: the original link formatted
+ * as a clickable platform-name link (e.g. "TikTok"). Shared by the inline answer
+ * and the failure annotations of onChosenInlineResult.
+ */
+async function buildPlaceholderContent (query) {
+  const url = new URL(query)
+  const matched = matchEntry(url, await fetchList())
+  const label = matched ? matched.name : url.hostname
+  return {
+    text: `[${label}](${query})`,
+    previewUrl: query,
+    label
+  }
+}
+
 async function onInlineQuery (inlineQuery) {
   const originalURL = inlineQuery.query
-  var label = null
+  var content = { message_text: originalURL }
   try {
-    const url = new URL(originalURL)
-    const matched = matchEntry(url, await fetchList())
-    label = matched ? matched.name : url.hostname
-  } catch (e) {
-    console.log("Instant answer: not a URL or list unavailable: ", e.message || e)
-  }
-  var content
-  if (label !== null) {
+    const placeholder = await buildPlaceholderContent(originalURL)
     content = {
-      message_text: `[${label}](${originalURL})`,
+      message_text: placeholder.text,
       parse_mode: 'markdown',
       link_preview_options: {
         is_disabled: false,
-        url: originalURL
+        url: placeholder.previewUrl
       }
     }
-  } else {
-    // Not a URL (or list fetch failed): plain text, no preview options.
-    content = { message_text: originalURL }
+  } catch (e) {
+    console.log("Instant answer: not a URL or list unavailable: ", e.message || e)
   }
   const results = [({
     type: 'article',
     id: crypto.randomUUID(),
     title: '☞ CLICK TO SEND',
+    description: `v${BOT_VERSION}`,
     input_message_content: content
   })]
-  const res = JSON.stringify(results)
-  return SendInlineQuery(inlineQuery.id, res)
+  return SendInlineQuery(inlineQuery.id, JSON.stringify(results), { cache_time: 0 })
 }
 
 /**
@@ -143,23 +153,46 @@ async function onInlineQuery (inlineQuery) {
  * the message to the winning service link, triggering a fresh link preview.
  * Requires inline feedback to be enabled via @BotFather (/setinlinefeedback).
  */
+/**
+ * Handle a result the user picked and sent to a chat. Probes all candidate
+ * services in parallel (no UI blocking — the message is already out) and edits
+ * the message to the winning service link, triggering a fresh link preview.
+ * Every failure is made visible by annotating the sent message with a ⚠️ note,
+ * so a silently untouched message means the click event never arrived at all
+ * (check /setinlinefeedback). Requires inline feedback via @BotFather.
+ */
 async function onChosenInlineResult (chosen) {
+  if (!chosen.query) return
+  dlog('chosen: inline_message_id present =', !!chosen.inline_message_id)
+  if (!chosen.inline_message_id) return
+  var base = { text: chosen.query, previewUrl: null }
   try {
-    dlog('chosen: inline_message_id present =', !!chosen.inline_message_id)
-    if (!chosen.inline_message_id || !chosen.query) return
+    const placeholder = await buildPlaceholderContent(chosen.query)
+    base = placeholder
+  } catch (e) {
+    console.log("Placeholder rebuild failed: ", e.message || e)
+  }
+  try {
     console.log("Chosen inline result: ", chosen.query)
     const { url, title } = await getFixedURL(chosen.query)
     if (!title || title === 'Embed Link') {
-      dlog('chosen: no embed service found, keeping original link')
-      console.log("No embed service found, keeping original link")
+      dlog('chosen: no embed service found')
+      await editInlineMessage(chosen.inline_message_id, `${base.text}\n⚠️ no working embed service right now`, base.previewUrl)
       return
     }
     const result = await editInlineMessage(chosen.inline_message_id, `[${title}](${url})`, url)
     dlog('chosen: edit response:', result)
-    console.log("Message edited to: ", url)
+    if (!result.ok) {
+      await editInlineMessage(chosen.inline_message_id, `${base.text}\n⚠️ edit rejected: ${result.description || 'unknown'}`, base.previewUrl)
+    }
   } catch (e) {
     dlog('chosen: failed:', e.message || String(e))
     console.log("Failed to resolve/edit embed link: ", e.message || e)
+    try {
+      await editInlineMessage(chosen.inline_message_id, `${base.text}\n⚠️ ${String(e.message || e).slice(0, 100)}`, base.previewUrl)
+    } catch (e2) {
+      console.log("Annotation edit also failed: ", e2.message || e2)
+    }
   }
 }
 
@@ -482,10 +515,11 @@ function extractMetaTags (html) {
  * https://core.telegram.org/bots/api#answerinlinequery
  */
 
-async function SendInlineQuery (inlineQueryId, results) {
+async function SendInlineQuery (inlineQueryId, results, extra = {}) {
   return (await fetch(apiUrl('answerInlineQuery', {
     inline_query_id: inlineQueryId,
-    results
+    results,
+    ...extra
   }))).json()
 }
 
