@@ -12,27 +12,29 @@ const WEBHOOK = '/endpoint'
  */
 addEventListener('fetch', event => {
   const url = new URL(event.request.url)
-  const authorized = url.searchParams.get('key') === SECRET && SECRET.length > 0
   if (url.pathname === WEBHOOK) {
     event.respondWith(handleWebhook(event))
-  } else if (!authorized) {
-    // Management endpoints require ?key=<ENV_BOT_SECRET>; hide their existence.
-    event.respondWith(new Response('Not found', { status: 404 }))
+  } else if (url.pathname !== '/registerWebhook' && url.pathname !== '/unRegisterWebhook' && url.pathname !== '/debug') {
+    event.respondWith(new Response('No handler for this request', { status: 404 }))
+  } else if (url.searchParams.get('key') !== SECRET || SECRET.length === 0) {
+    // Management endpoints require ?key=<ENV_BOT_SECRET>
+    event.respondWith(new Response('Forbidden', { status: 403 }))
   } else if (url.pathname === '/registerWebhook') {
     event.respondWith(registerWebhook(event, url, WEBHOOK, SECRET))
   } else if (url.pathname === '/unRegisterWebhook') {
     event.respondWith(unRegisterWebhook(event))
-  } else if (url.pathname === '/debug') {
-    event.respondWith(new Response(DEBUG_LOG.join('\n') || 'no events captured yet', { headers: { 'content-type': 'text/plain; charset=utf-8' } }))
   } else {
-    event.respondWith(new Response('No handler for this request'))
+    event.respondWith(new Response(`isolate ${ISOLATE_ID} saw ${isolateEventCount} webhook events since boot\n\n` + (DEBUG_LOG.join('\n') || 'no events captured yet'), { headers: { 'content-type': 'text/plain; charset=utf-8' } }))
   }
 })
 
 // In-memory debug trail (per isolate - enough to trace a test click).
 // View at /debug. Temporary diagnostics, not a general log.
 const DEBUG_LOG = []
+const ISOLATE_ID = crypto.randomUUID().slice(0, 8)
+let isolateEventCount = 0
 function dlog (...args) {
+  isolateEventCount++
   const line = new Date().toISOString().slice(11, 23) + ' ' + args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')
   DEBUG_LOG.push(line)
   if (DEBUG_LOG.length > 100) DEBUG_LOG.shift()
