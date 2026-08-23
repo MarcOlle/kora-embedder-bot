@@ -112,7 +112,6 @@ async function onInlineQuery (inlineQuery) {
     type: 'article',
     id: crypto.randomUUID(),
     title: '☞ CLICK TO SEND',
-    description: 'Resolving best embed service…',
     input_message_content: content
   })]
   const res = JSON.stringify(results)
@@ -474,7 +473,14 @@ async function SendInlineQuery (inlineQueryId, results) {
 async function registerWebhook (event, requestUrl, suffix, secret) {
   // https://core.telegram.org/bots/api#setwebhook
   const webhookUrl = `${requestUrl.protocol}//${requestUrl.hostname}${suffix}`
-  const r = await (await fetch(apiUrl('setWebhook', { url: webhookUrl, secret_token: secret }))).json()
+  const r = await (await fetch(apiUrl('setWebhook', {
+    url: webhookUrl,
+    secret_token: secret,
+    // Explicitly request every update type the bot handles - a previously
+    // registered restriction would otherwise persist and silently drop
+    // chosen_inline_result updates, breaking post-send message editing.
+    allowed_updates: JSON.stringify(['message', 'inline_query', 'chosen_inline_result'])
+  }))).json()
   return new Response('ok' in r && r.ok ? 'Ok' : JSON.stringify(r, null, 2))
 }
 
