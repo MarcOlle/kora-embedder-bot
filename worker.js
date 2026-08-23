@@ -12,16 +12,31 @@ const WEBHOOK = '/endpoint'
  */
 addEventListener('fetch', event => {
   const url = new URL(event.request.url)
+  const authorized = url.searchParams.get('key') === SECRET && SECRET.length > 0
   if (url.pathname === WEBHOOK) {
     event.respondWith(handleWebhook(event))
+  } else if (!authorized) {
+    // Management endpoints require ?key=<ENV_BOT_SECRET>; hide their existence.
+    event.respondWith(new Response('Not found', { status: 404 }))
   } else if (url.pathname === '/registerWebhook') {
     event.respondWith(registerWebhook(event, url, WEBHOOK, SECRET))
   } else if (url.pathname === '/unRegisterWebhook') {
     event.respondWith(unRegisterWebhook(event))
+  } else if (url.pathname === '/debug') {
+    event.respondWith(new Response(DEBUG_LOG.join('\n') || 'no events captured yet', { headers: { 'content-type': 'text/plain; charset=utf-8' } }))
   } else {
     event.respondWith(new Response('No handler for this request'))
   }
 })
+
+// In-memory debug trail (per isolate - enough to trace a test click).
+// View at /debug. Temporary diagnostics, not a general log.
+const DEBUG_LOG = []
+function dlog (...args) {
+  const line = new Date().toISOString().slice(11, 23) + ' ' + args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')
+  DEBUG_LOG.push(line)
+  if (DEBUG_LOG.length > 100) DEBUG_LOG.shift()
+}
 
 /**
  * Handle requests to WEBHOOK
@@ -30,11 +45,13 @@ addEventListener('fetch', event => {
 async function handleWebhook (event) {
   // Check secret
   if (event.request.headers.get('X-Telegram-Bot-Api-Secret-Token') !== SECRET) {
+    dlog('webhook rejected: bad secret')
     return new Response('Unauthorized', { status: 403 })
   }
 
   // Read request body synchronously
   const update = await event.request.json()
+  dlog('update received:', Object.keys(update).filter(k => k !== 'update_id').join(','))
   // Deal with response asynchronously
   event.waitUntil(onUpdate(update))
 
@@ -126,16 +143,20 @@ async function onInlineQuery (inlineQuery) {
  */
 async function onChosenInlineResult (chosen) {
   try {
+    dlog('chosen: inline_message_id present =', !!chosen.inline_message_id)
     if (!chosen.inline_message_id || !chosen.query) return
     console.log("Chosen inline result: ", chosen.query)
     const { url, title } = await getFixedURL(chosen.query)
     if (!title || title === 'Embed Link') {
+      dlog('chosen: no embed service found, keeping original link')
       console.log("No embed service found, keeping original link")
       return
     }
-    await editInlineMessage(chosen.inline_message_id, `[${title}](${url})`, url)
+    const result = await editInlineMessage(chosen.inline_message_id, `[${title}](${url})`, url)
+    dlog('chosen: edit response:', result)
     console.log("Message edited to: ", url)
   } catch (e) {
+    dlog('chosen: failed:', e.message || String(e))
     console.log("Failed to resolve/edit embed link: ", e.message || e)
   }
 }
