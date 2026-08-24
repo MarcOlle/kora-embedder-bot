@@ -7,7 +7,7 @@ const DEBUG = false
 function log (...args) {
   if (DEBUG) console.log(...args)
 }
-const BOT_VERSION = '2026-08-24.7'
+const BOT_VERSION = '2026-08-24.8'
 
 addEventListener('fetch', event => {
   const url = new URL(event.request.url)
@@ -110,6 +110,14 @@ async function onInlineQuery (inlineQuery) {
 // are annotated onto the message: a fully untouched message means the click
 // event never arrived (enable inline feedback via @BotFather /setinlinefeedback).
 // When DEBUG is on, each chosen-event step is also DM'd to the clicking user
+// Telegram memoizes link previews per exact URL - failed crawls included.
+// Stamp a unique param so every edit forces an uncached crawl of the service.
+function cacheBust (url) {
+  const u = new URL(url)
+  u.searchParams.set('_', Date.now().toString(36) + Math.random().toString(36).slice(2, 6))
+  return u.toString()
+}
+
 async function notify (userId, text) {
   if (!DEBUG || !userId) return
   try {
@@ -143,7 +151,8 @@ async function onChosenInlineResult (chosen) {
       await editInlineMessage(chosen.inline_message_id, `${base.text}\n⚠️ no working embed service right now`, base.previewUrl, base.keyboard)
       return
     }
-    const result = await editInlineMessage(chosen.inline_message_id, `[${title}](${url})`, url, base.keyboard)
+    const freshUrl = cacheBust(url)
+    const result = await editInlineMessage(chosen.inline_message_id, `[${title}](${freshUrl})`, freshUrl, base.keyboard)
     await notify(userId, result.ok ? `✅ edited to ${url}` : `⚠️ edit rejected: ${result.description || 'unknown'}`)
     if (!result.ok) {
       await editInlineMessage(chosen.inline_message_id, `${base.text}\n⚠️ edit rejected: ${result.description || 'unknown'}`, base.previewUrl, base.keyboard)
