@@ -21,15 +21,17 @@ addEventListener('fetch', event => {
   } else if (url.pathname === '/unRegisterWebhook') {
     event.respondWith(unRegisterWebhook(event))
   } else {
+    if (!ISOLATE_ID) ISOLATE_ID = crypto.randomUUID().slice(0, 8)
     event.respondWith(new Response(`isolate ${ISOLATE_ID} saw ${isolateEventCount} webhook events since boot\n\n` + (DEBUG_LOG.join('\n') || 'no events captured yet'), { headers: { 'content-type': 'text/plain; charset=utf-8' } }))
   }
 })
 
 // Per-isolate trail for tracing test clicks; view at /debug?key=...
 const DEBUG_LOG = []
-const ISOLATE_ID = crypto.randomUUID().slice(0, 8)
+let ISOLATE_ID = null // generated lazily: crypto.randomUUID() is banned in global scope
 let isolateEventCount = 0
 function dlog (...args) {
+  if (!ISOLATE_ID) ISOLATE_ID = crypto.randomUUID().slice(0, 8)
   isolateEventCount++
   const line = new Date().toISOString().slice(11, 23) + ' ' + args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')
   DEBUG_LOG.push(line)
