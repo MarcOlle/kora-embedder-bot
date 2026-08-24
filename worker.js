@@ -7,7 +7,7 @@ const DEBUG = false
 function log (...args) {
   if (DEBUG) console.log(...args)
 }
-const BOT_VERSION = '2026-08-24.6'
+const BOT_VERSION = '2026-08-24.7'
 
 addEventListener('fetch', event => {
   const url = new URL(event.request.url)
@@ -229,33 +229,26 @@ function rewriteUrl (url, sourceRegex, targetHost) {
 
 async function selectTarget (url, sourceRegex, candidates) {
   const probeUrls = new Map(candidates.map(candidate => [candidate, rewriteUrl(url, sourceRegex, candidate).toString()]))
-  // Tier 1: direct video file = deterministic embed signal; all candidates in parallel
-  const directChecks = await Promise.all(candidates.map(async candidate => {
-    log("Direct video file probe: ", probeUrls.get(candidate))
-    const ok = await probeDirectVideoFile(probeUrls.get(candidate))
-    return { candidate, ok }
-  }))
-  const directWinner = directChecks.find(result => result.ok)
-  if (directWinner) {
-    log("Direct video file found: ", directWinner.candidate)
-    return directWinner.candidate
-  }
-  // Tier 2: best effort - HTML embed pages (og:video resolving to a playable file)
-  const pageChecks = await Promise.all(candidates.map(async candidate => {
-    log("Probing embed page: ", probeUrls.get(candidate))
+  // Every candidate gets both probes concurrently; the winner is the first one
+  // in list.json order that passes either check, so service ranking is decided
+  // purely by the order in list.json.
+  const results = await Promise.all(candidates.map(async candidate => {
+    log('Probing: ', probeUrls.get(candidate))
+    const direct = await probeDirectVideoFile(probeUrls.get(candidate))
     const tags = await probeEmbed(probeUrls.get(candidate))
-    return { candidate, tags }
+    return { candidate, direct, tags }
   }))
-  const videoWinner = pageChecks.find(result => result.tags.video)
+  const videoWinner = results.find(result => result.direct || result.tags.video)
   if (videoWinner) {
-    log("Video embed found: ", videoWinner.candidate)
+    log('Selected target: ', videoWinner.candidate)
     return videoWinner.candidate
   }
-  const imageWinner = pageChecks.find(result => result.tags.image)
+  const imageWinner = results.find(result => result.tags.image)
   if (imageWinner) {
-    log("Image-only embed found (fallback): ", imageWinner.candidate)
+    log('Image-only fallback: ', imageWinner.candidate)
+    return imageWinner.candidate
   }
-  return imageWinner ? imageWinner.candidate : null
+  return null
 }
 
 // Generous budget: probing runs after the message was already sent (see onChosenInlineResult)
