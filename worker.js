@@ -103,7 +103,7 @@ async function onInlineQuery (inlineQuery) {
   const results = [({
     type: 'article',
     id: crypto.randomUUID(),
-    title: `☞ CLICK TO SEND · v${BOT_VERSION}`,
+    title: `☞ CLICK TO SEND`,
     description: `v${BOT_VERSION}`,
     input_message_content: content
   })]
