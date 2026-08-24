@@ -2,12 +2,17 @@ const TOKEN = ENV_BOT_TOKEN
 const SECRET = ENV_BOT_SECRET // A-Z, a-z, 0-9, _ and -
 const LIST_URL = ENV_LIST_URL
 const WEBHOOK = '/endpoint'
+
+const BOT_VERSION = '2026-08-24.12'
+const EMBED_TIMEOUT_MS = 10000
+const INLINE_CACHE_TIME = 60
+const MAX_BODY_CHARS = 65536
+const CRAWLER_UA = 'TelegramBot (like TwitterBot)'
 // Master debug switch: verbose logging + chosen-event DM notifications
 const DEBUG = false
 function log (...args) {
   if (DEBUG) console.log(...args)
 }
-const BOT_VERSION = '2026-08-24.8'
 
 addEventListener('fetch', event => {
   const url = new URL(event.request.url)
@@ -101,8 +106,9 @@ async function onInlineQuery (inlineQuery) {
     // in chosen_inline_result, making post-send editing impossible
     reply_markup: replyMarkup
   })]
-  // cache_time: 0 so repeated queries always hit current code (see BOT_VERSION)
-  return SendInlineQuery(inlineQuery.id, JSON.stringify(results), { cache_time: 0 })
+  // Short Telegram-side cache: deduplicates rapid identical queries while keeping
+  // post-deploy version-marker staleness under a minute
+  return SendInlineQuery(inlineQuery.id, JSON.stringify(results), { cache_time: INLINE_CACHE_TIME })
 }
 
 // Instant answer happens in onInlineQuery; here the services are probed after
@@ -260,10 +266,6 @@ async function selectTarget (url, sourceRegex, candidates) {
   return null
 }
 
-// Generous budget: probing runs after the message was already sent (see onChosenInlineResult)
-const EMBED_TIMEOUT_MS = 8000
-const MAX_BODY_CHARS = 65536
-const CRAWLER_UA = 'TelegramBot (like TwitterBot)'
 
 async function fetchWithTimeout (url, options = {}) {
   const controller = new AbortController()
@@ -357,6 +359,7 @@ async function isPlayableVideo (videoUrl) {
   const contentType = await probeContentType(videoUrl)
   return !!contentType.toLowerCase().startsWith('video/')
 }
+
 
 async function probeContentType (url) {
   const contentTypeOf = (response) => response.headers.get('content-type') || ''
