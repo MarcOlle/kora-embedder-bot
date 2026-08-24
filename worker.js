@@ -2,16 +2,12 @@
  * https://github.com/cvzi/telegram-bot-cloudflare
  */
 
-const TOKEN = ENV_BOT_TOKEN // Get it from @BotFather https://core.telegram.org/bots#6-botfather
+const TOKEN = ENV_BOT_TOKEN
 const SECRET = ENV_BOT_SECRET // A-Z, a-z, 0-9, _ and -
 const LIST_URL = ENV_LIST_URL
 const WEBHOOK = '/endpoint'
-// Shown in the inline-result description so you can always tell which build is live.
-const BOT_VERSION = '2026-08-24.1'
+const BOT_VERSION = '2026-08-24.1' // shown in the inline result to identify the live build
 
-/**
- * Wait for requests to the worker
- */
 addEventListener('fetch', event => {
   const url = new URL(event.request.url)
   if (url.pathname === WEBHOOK) {
@@ -19,7 +15,6 @@ addEventListener('fetch', event => {
   } else if (url.pathname !== '/registerWebhook' && url.pathname !== '/unRegisterWebhook' && url.pathname !== '/debug') {
     event.respondWith(new Response('No handler for this request', { status: 404 }))
   } else if (url.searchParams.get('key') !== SECRET || SECRET.length === 0) {
-    // Management endpoints require ?key=<ENV_BOT_SECRET>
     event.respondWith(new Response('Forbidden', { status: 403 }))
   } else if (url.pathname === '/registerWebhook') {
     event.respondWith(registerWebhook(event, url, WEBHOOK, SECRET))
@@ -30,8 +25,7 @@ addEventListener('fetch', event => {
   }
 })
 
-// In-memory debug trail (per isolate - enough to trace a test click).
-// View at /debug. Temporary diagnostics, not a general log.
+// Per-isolate trail for tracing test clicks; view at /debug?key=...
 const DEBUG_LOG = []
 const ISOLATE_ID = crypto.randomUUID().slice(0, 8)
 let isolateEventCount = 0
@@ -42,30 +36,20 @@ function dlog (...args) {
   if (DEBUG_LOG.length > 100) DEBUG_LOG.shift()
 }
 
-/**
- * Handle requests to WEBHOOK
- * https://core.telegram.org/bots/api#update
- */
 async function handleWebhook (event) {
-  // Check secret
   if (event.request.headers.get('X-Telegram-Bot-Api-Secret-Token') !== SECRET) {
     dlog('webhook rejected: bad secret')
     return new Response('Unauthorized', { status: 403 })
   }
 
-  // Read request body synchronously
   const update = await event.request.json()
   dlog('update received:', Object.keys(update).filter(k => k !== 'update_id').join(','))
-  // Deal with response asynchronously
+  // Respond Ok immediately; processing continues after the response via waitUntil
   event.waitUntil(onUpdate(update))
 
   return new Response('Ok')
 }
 
-/**
- * Handle incoming Update
- * https://core.telegram.org/bots/api#update
- */
 async function onUpdate (update) {
   if ('message' in update) {
     await onMessage(update.message)
@@ -76,19 +60,11 @@ async function onUpdate (update) {
   }
 }
 
-/**
- * Handle incoming Message
- * https://core.telegram.org/bots/api#message
- */
 async function onMessage (message) {
     const {url, title} = await getFixedURL(message.text)
     return sendPlainText(message.chat.id, url)
 }
 
-/**
- * Send plain text message
- * https://core.telegram.org/bots/api#sendmessage
- */
 async function sendPlainText (chatId, text) {
   return (await fetch(apiUrl('sendMessage', {
     chat_id: chatId,
@@ -96,20 +72,7 @@ async function sendPlainText (chatId, text) {
   }))).json()
 }
 
-/**
- * Handle incoming query
- * https://core.telegram.org/bots/api#InlineQuery
- *
- * Answers instantly with a placeholder message - the original link formatted as
- * a clickable platform-name link (e.g. "TikTok") - so the user never waits for
- * service probing. The working embed service is resolved afterwards in
- * onChosenInlineResult, which edits the sent message once probing finishes.
- */
-/**
- * Build the instant placeholder content for a query: the original link formatted
- * as a clickable platform-name link (e.g. "TikTok"). Shared by the inline answer
- * and the failure annotations of onChosenInlineResult.
- */
+// Placeholder for a query: original link formatted as a clickable platform name
 async function buildPlaceholderContent (query) {
   const url = new URL(query)
   const matched = matchEntry(url, await fetchList())
@@ -140,27 +103,18 @@ async function onInlineQuery (inlineQuery) {
   const results = [({
     type: 'article',
     id: crypto.randomUUID(),
-    title: '☞ CLICK TO SEND',
+    title: `☞ CLICK TO SEND · v${BOT_VERSION}`,
     description: `v${BOT_VERSION}`,
     input_message_content: content
   })]
+  // cache_time: 0 so repeated queries always hit current code (see BOT_VERSION)
   return SendInlineQuery(inlineQuery.id, JSON.stringify(results), { cache_time: 0 })
 }
 
-/**
- * Handle a result the user picked and sent to a chat. Probes all candidate
- * services in parallel (no UI blocking — the message is already out) and edits
- * the message to the winning service link, triggering a fresh link preview.
- * Requires inline feedback to be enabled via @BotFather (/setinlinefeedback).
- */
-/**
- * Handle a result the user picked and sent to a chat. Probes all candidate
- * services in parallel (no UI blocking — the message is already out) and edits
- * the message to the winning service link, triggering a fresh link preview.
- * Every failure is made visible by annotating the sent message with a ⚠️ note,
- * so a silently untouched message means the click event never arrived at all
- * (check /setinlinefeedback). Requires inline feedback via @BotFather.
- */
+// Instant answer happens in onInlineQuery; here the services are probed after
+// the message is already sent and the message is edited to the winner. Failures
+// are annotated onto the message: a fully untouched message means the click
+// event never arrived (enable inline feedback via @BotFather /setinlinefeedback).
 async function onChosenInlineResult (chosen) {
   if (!chosen.query) return
   dlog('chosen: inline_message_id present =', !!chosen.inline_message_id)
@@ -196,10 +150,6 @@ async function onChosenInlineResult (chosen) {
   }
 }
 
-/**
- * Edit an inline-mode message and point its link preview at the new URL.
- * https://core.telegram.org/bots/api#editmessagetext
- */
 async function editInlineMessage (inlineMessageId, text, url) {
   return (await fetch(apiUrl('editMessageText', {
     inline_message_id: inlineMessageId,
@@ -237,10 +187,6 @@ function matchEntry (url, json) {
 async function getFixedURL (originalURL) {
   console.log("Original URL: ", originalURL)
   var url = new URL(originalURL)
-  console.log("Hostname: ", url.hostname)
-  if (isTikTokShortLink(url)) {
-    url = await canonicalizeTikTokShortLink(url)
-  }
   const matched = matchEntry(url, await fetchList())
   var title = 'Embed Link'
 
@@ -263,55 +209,15 @@ async function getFixedURL (originalURL) {
   }
 }
 
-/**
- * Replace the matched hostname with the target embed service host.
- */
 function rewriteUrl (url, sourceRegex, targetHost) {
   const rewritten = new URL(url.toString())
   rewritten.hostname = rewritten.hostname.replace(new RegExp(sourceRegex, 'gi'), targetHost)
   return rewritten
 }
 
-/**
- * TikTok share links (vm.tiktok.com/CODE, vt.tiktok.com/CODE, tiktok.com/t/CODE)
- * are resolved to their canonical www.tiktok.com/@user/video/ID form before any
- * service selection, so every embed service receives its primary URL format.
- */
-function isTikTokShortLink (url) {
-  return /^(vm|vt)\.tiktok\.com$/i.test(url.hostname) || /^\/t\/[^/]+\/?$/i.test(url.pathname)
-}
-
-async function canonicalizeTikTokShortLink (url) {
-  try {
-    console.log("Resolving TikTok short link: ", url.toString())
-    const response = await fetchWithTimeout(url.toString(), {
-      method: 'GET',
-      headers: {
-        'User-Agent': CRAWLER_UA,
-        'Range': 'bytes=0-0'
-      }
-    })
-    if (response.body) {
-      response.body.cancel()
-    }
-    const resolved = new URL(response.url)
-    if (/tiktok\.com$/i.test(resolved.hostname) && /\/video\/\d+/.test(resolved.pathname)) {
-      const canonical = new URL('https://www.tiktok.com' + resolved.pathname)
-      console.log("Canonical URL: ", canonical.toString())
-      return canonical
-    }
-    console.log("Short link did not resolve to a video: ", response.url)
-  } catch (e) {
-    console.log("Short link resolution failed: ", e.message || e)
-  }
-  return url
-}
-
 async function selectTarget (url, sourceRegex, candidates) {
   const probeUrls = new Map(candidates.map(candidate => [candidate, rewriteUrl(url, sourceRegex, candidate).toString()]))
-  // Tier 1 — deterministic: a candidate whose rewritten URL serves a direct video
-  // file is guaranteed to produce a video preview in Telegram. All candidates are
-  // probed in parallel so total latency is one probe, not the sum of all.
+  // Tier 1: direct video file = deterministic embed signal; all candidates in parallel
   const directChecks = await Promise.all(candidates.map(async candidate => {
     console.log("Direct video file probe: ", probeUrls.get(candidate))
     const ok = await probeDirectVideoFile(probeUrls.get(candidate))
@@ -322,8 +228,7 @@ async function selectTarget (url, sourceRegex, candidates) {
     console.log("Direct video file found: ", directWinner.candidate)
     return directWinner.candidate
   }
-  // Tier 2 — best effort: HTML embed pages (og:video pointing to a playable file).
-  // Only reached when no deterministic (direct file) candidate exists.
+  // Tier 2: best effort - HTML embed pages (og:video resolving to a playable file)
   const pageChecks = await Promise.all(candidates.map(async candidate => {
     console.log("Probing embed page: ", probeUrls.get(candidate))
     const tags = await probeEmbed(probeUrls.get(candidate))
@@ -341,9 +246,7 @@ async function selectTarget (url, sourceRegex, candidates) {
   return imageWinner ? imageWinner.candidate : null
 }
 
-// Generous per-request budget: probing runs after the message has already been
-// sent (see onChosenInlineResult), so latency here never blocks the user. The
-// offload .../generate endpoint can need ~6s on cold start.
+// Generous budget: probing runs after the message was already sent (see onChosenInlineResult)
 const EMBED_TIMEOUT_MS = 8000
 const MAX_BODY_CHARS = 65536
 const CRAWLER_UA = 'TelegramBot (like TwitterBot)'
@@ -358,12 +261,7 @@ async function fetchWithTimeout (url, options = {}) {
   }
 }
 
-/**
- * Deterministic check: does the URL resolve (following redirects) to a direct
- * video file? Sends a 1-byte Range GET so the media/CDN layer answers directly,
- * bypassing HTML pages and the bot-sniffing protection on them. A "yes" means
- * Telegram will play the URL as an inline video, unconditionally.
- */
+// 1-byte Range GET; a video/* final response is the deterministic embed signal
 async function probeDirectVideoFile (url) {
   try {
     const response = await fetchWithTimeout(url, {
@@ -389,12 +287,7 @@ async function probeDirectVideoFile (url) {
   }
 }
 
-/**
- * Fetch the embed page and check whether it actually contains a media preview.
- * Returns { video, image } booleans. A candidate counts as a video if either:
- * - the embed URL itself resolves to a direct video file, or
- * - the page declares an og:video URL that resolves to a playable video file.
- */
+// Best effort: page must declare an og:video URL that resolves to a playable file
 async function probeEmbed (probeUrl) {
   try {
     const response = await fetchWithTimeout(probeUrl, {
@@ -446,18 +339,11 @@ async function probeEmbed (probeUrl) {
   }
 }
 
-/**
- * True if the given URL resolves (following redirects) to a direct video file.
- */
 async function isPlayableVideo (videoUrl) {
   const contentType = await probeContentType(videoUrl)
   return !!contentType.toLowerCase().startsWith('video/')
 }
 
-/**
- * Return the Content-Type of a URL. Uses HEAD, falling back to GET for servers
- * that don't support HEAD. Never downloads the body.
- */
 async function probeContentType (url) {
   const contentTypeOf = (response) => response.headers.get('content-type') || ''
   try {
@@ -487,10 +373,6 @@ async function probeContentType (url) {
   }
 }
 
-/**
- * Extract Open Graph meta tags from an HTML string.
- * Returns an object keyed by the lowercased property/name with its content value.
- */
 function extractMetaTags (html) {
   const tags = {}
   const metaRegex = /<meta\b[^>]*>/gi
@@ -510,11 +392,6 @@ function extractMetaTags (html) {
   return tags
 }
 
-/**
- * Send result of the query
- * https://core.telegram.org/bots/api#answerinlinequery
- */
-
 async function SendInlineQuery (inlineQueryId, results, extra = {}) {
   return (await fetch(apiUrl('answerInlineQuery', {
     inline_query_id: inlineQueryId,
@@ -523,36 +400,21 @@ async function SendInlineQuery (inlineQueryId, results, extra = {}) {
   }))).json()
 }
 
-/**
- * Set webhook to this worker's url
- * https://core.telegram.org/bots/api#setwebhook
- */
 async function registerWebhook (event, requestUrl, suffix, secret) {
-  // https://core.telegram.org/bots/api#setwebhook
   const webhookUrl = `${requestUrl.protocol}//${requestUrl.hostname}${suffix}`
   const r = await (await fetch(apiUrl('setWebhook', {
     url: webhookUrl,
     secret_token: secret,
-    // Explicitly request every update type the bot handles - a previously
-    // registered restriction would otherwise persist and silently drop
-    // chosen_inline_result updates, breaking post-send message editing.
+    // explicit list: persisted restrictions would otherwise drop chosen_inline_result
     allowed_updates: JSON.stringify(['message', 'inline_query', 'chosen_inline_result'])
   }))).json()
   return new Response('ok' in r && r.ok ? 'Ok' : JSON.stringify(r, null, 2))
 }
-
-/**
- * Remove webhook
- * https://core.telegram.org/bots/api#setwebhook
- */
 async function unRegisterWebhook (event) {
   const r = await (await fetch(apiUrl('setWebhook', { url: '' }))).json()
   return new Response('ok' in r && r.ok ? 'Ok' : JSON.stringify(r, null, 2))
 }
 
-/**
- * Return url to telegram api, optionally with parameters added
- */
 function apiUrl (methodName, params = null) {
   let query = ''
   if (params) {
