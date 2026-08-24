@@ -3,8 +3,8 @@ const SECRET = ENV_BOT_SECRET // A-Z, a-z, 0-9, _ and -
 const LIST_URL = ENV_LIST_URL
 const WEBHOOK = '/endpoint'
 
-const BOT_VERSION = '2026-08-24.12'
-const EMBED_TIMEOUT_MS = 10000
+const BOT_VERSION = '2026-08-24.13'
+const EMBED_TIMEOUT_MS = 15000
 const INLINE_CACHE_TIME = 60
 const MAX_BODY_CHARS = 65536
 const CRAWLER_UA = 'TelegramBot (like TwitterBot)'
