@@ -117,10 +117,26 @@ async function onInlineQuery (inlineQuery) {
 // the message is already sent and the message is edited to the winner. Failures
 // are annotated onto the message: a fully untouched message means the click
 // event never arrived (enable inline feedback via @BotFather /setinlinefeedback).
+// TEMPORARY: while debugging delivery, DM every chosen-event step to the user
+const DEBUG_NOTIFY = true
+
+async function notify (userId, text) {
+  if (!DEBUG_NOTIFY || !userId) return
+  try {
+    await sendPlainText(userId, text)
+  } catch (e) {
+    console.log("notify failed: ", e.message || e)
+  }
+}
+
 async function onChosenInlineResult (chosen) {
+  const userId = chosen.from && chosen.from.id
+  await notify(userId, `📩 chosen received | query:${!!chosen.query} inline_message_id:${!!chosen.inline_message_id}`)
   if (!chosen.query) return
-  dlog('chosen: inline_message_id present =', !!chosen.inline_message_id)
-  if (!chosen.inline_message_id) return
+  if (!chosen.inline_message_id) {
+    await notify(userId, '⚠️ no inline_message_id - cannot edit')
+    return
+  }
   var base = { text: chosen.query, previewUrl: null }
   try {
     const placeholder = await buildPlaceholderContent(chosen.query)
@@ -133,17 +149,20 @@ async function onChosenInlineResult (chosen) {
     const { url, title } = await getFixedURL(chosen.query)
     if (!title || title === 'Embed Link') {
       dlog('chosen: no embed service found')
+      await notify(userId, '⚠️ probe: no working embed service')
       await editInlineMessage(chosen.inline_message_id, `${base.text}\n⚠️ no working embed service right now`, base.previewUrl)
       return
     }
     const result = await editInlineMessage(chosen.inline_message_id, `[${title}](${url})`, url)
     dlog('chosen: edit response:', result)
+    await notify(userId, result.ok ? `✅ edited to ${url}` : `⚠️ edit rejected: ${result.description || 'unknown'}`)
     if (!result.ok) {
       await editInlineMessage(chosen.inline_message_id, `${base.text}\n⚠️ edit rejected: ${result.description || 'unknown'}`, base.previewUrl)
     }
   } catch (e) {
     dlog('chosen: failed:', e.message || String(e))
     console.log("Failed to resolve/edit embed link: ", e.message || e)
+    await notify(userId, `💥 ${String(e.message || e).slice(0, 100)}`)
     try {
       await editInlineMessage(chosen.inline_message_id, `${base.text}\n⚠️ ${String(e.message || e).slice(0, 100)}`, base.previewUrl)
     } catch (e2) {
