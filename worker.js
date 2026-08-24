@@ -6,7 +6,7 @@ const TOKEN = ENV_BOT_TOKEN
 const SECRET = ENV_BOT_SECRET // A-Z, a-z, 0-9, _ and -
 const LIST_URL = ENV_LIST_URL
 const WEBHOOK = '/endpoint'
-const BOT_VERSION = '2026-08-24.1' // shown in the inline result to identify the live build
+const BOT_VERSION = '2026-08-24.3' // shown in the inline result to identify the live build
 
 addEventListener('fetch', event => {
   const url = new URL(event.request.url)
@@ -89,6 +89,7 @@ async function buildPlaceholderContent (query) {
 async function onInlineQuery (inlineQuery) {
   const originalURL = inlineQuery.query
   var content = { message_text: originalURL }
+  var replyMarkup = null
   try {
     const placeholder = await buildPlaceholderContent(originalURL)
     content = {
@@ -99,6 +100,7 @@ async function onInlineQuery (inlineQuery) {
         url: placeholder.previewUrl
       }
     }
+    replyMarkup = { inline_keyboard: [[{ text: '🌐 Open original', url: originalURL }]] }
   } catch (e) {
     console.log("Instant answer: not a URL or list unavailable: ", e.message || e)
   }
@@ -107,7 +109,10 @@ async function onInlineQuery (inlineQuery) {
     id: crypto.randomUUID(),
     title: `☞ CLICK TO SEND`,
     description: `v${BOT_VERSION}`,
-    input_message_content: content
+    input_message_content: content,
+    // inline keyboard required: without it Telegram omits inline_message_id
+    // in chosen_inline_result, making post-send editing impossible
+    reply_markup: replyMarkup
   })]
   // cache_time: 0 so repeated queries always hit current code (see BOT_VERSION)
   return SendInlineQuery(inlineQuery.id, JSON.stringify(results), { cache_time: 0 })
