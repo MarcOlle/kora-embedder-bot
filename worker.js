@@ -1,12 +1,8 @@
-/**
- * https://github.com/cvzi/telegram-bot-cloudflare
- */
-
 const TOKEN = ENV_BOT_TOKEN
 const SECRET = ENV_BOT_SECRET // A-Z, a-z, 0-9, _ and -
 const LIST_URL = ENV_LIST_URL
 const WEBHOOK = '/endpoint'
-const BOT_VERSION = '2026-08-24.3' // shown in the inline result to identify the live build
+const BOT_VERSION = '2026-08-24.4' // shown in the inline result to identify the live build
 
 addEventListener('fetch', event => {
   const url = new URL(event.request.url)
@@ -146,6 +142,7 @@ async function onChosenInlineResult (chosen) {
   try {
     const placeholder = await buildPlaceholderContent(chosen.query)
     base = placeholder
+    base.keyboard = { inline_keyboard: [[{ text: '🌐 Open original', url: chosen.query }]] }
   } catch (e) {
     console.log("Placeholder rebuild failed: ", e.message || e)
   }
@@ -155,29 +152,29 @@ async function onChosenInlineResult (chosen) {
     if (!title || title === 'Embed Link') {
       dlog('chosen: no embed service found')
       await notify(userId, '⚠️ probe: no working embed service')
-      await editInlineMessage(chosen.inline_message_id, `${base.text}\n⚠️ no working embed service right now`, base.previewUrl)
+      await editInlineMessage(chosen.inline_message_id, `${base.text}\n⚠️ no working embed service right now`, base.previewUrl, base.keyboard)
       return
     }
-    const result = await editInlineMessage(chosen.inline_message_id, `[${title}](${url})`, url)
+    const result = await editInlineMessage(chosen.inline_message_id, `[${title}](${url})`, url, base.keyboard)
     dlog('chosen: edit response:', result)
     await notify(userId, result.ok ? `✅ edited to ${url}` : `⚠️ edit rejected: ${result.description || 'unknown'}`)
     if (!result.ok) {
-      await editInlineMessage(chosen.inline_message_id, `${base.text}\n⚠️ edit rejected: ${result.description || 'unknown'}`, base.previewUrl)
+      await editInlineMessage(chosen.inline_message_id, `${base.text}\n⚠️ edit rejected: ${result.description || 'unknown'}`, base.previewUrl, base.keyboard)
     }
   } catch (e) {
     dlog('chosen: failed:', e.message || String(e))
     console.log("Failed to resolve/edit embed link: ", e.message || e)
     await notify(userId, `💥 ${String(e.message || e).slice(0, 100)}`)
     try {
-      await editInlineMessage(chosen.inline_message_id, `${base.text}\n⚠️ ${String(e.message || e).slice(0, 100)}`, base.previewUrl)
+      await editInlineMessage(chosen.inline_message_id, `${base.text}\n⚠️ ${String(e.message || e).slice(0, 100)}`, base.previewUrl, base.keyboard)
     } catch (e2) {
       console.log("Annotation edit also failed: ", e2.message || e2)
     }
   }
 }
 
-async function editInlineMessage (inlineMessageId, text, url) {
-  return (await fetch(apiUrl('editMessageText', {
+async function editInlineMessage (inlineMessageId, text, url, replyMarkup) {
+  const params = {
     inline_message_id: inlineMessageId,
     text,
     parse_mode: 'markdown',
@@ -185,7 +182,10 @@ async function editInlineMessage (inlineMessageId, text, url) {
       is_disabled: false,
       url
     })
-  }))).json()
+  }
+  // omitting reply_markup strips the button from the edited message
+  if (replyMarkup) params.reply_markup = JSON.stringify(replyMarkup)
+  return (await fetch(apiUrl('editMessageText', params))).json()
 }
 
 async function fetchList () {
