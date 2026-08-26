@@ -3,7 +3,7 @@ const SECRET = ENV_BOT_SECRET // A-Z, a-z, 0-9, _ and -
 const LIST_URL = ENV_LIST_URL
 const WEBHOOK = '/endpoint'
 
-const BOT_VERSION = '2026-08-24.13'
+const BOT_VERSION = '2026-08-27.0'
 const EMBED_TIMEOUT_MS = 15000
 const INLINE_CACHE_TIME = 60
 const MAX_BODY_CHARS = 65536
@@ -119,9 +119,8 @@ async function onInlineQuery (inlineQuery) {
 // Telegram memoizes link previews per exact URL - failed crawls included.
 // Stamp a unique param so every edit forces an uncached crawl of the service.
 function cacheBust (url) {
-  const u = new URL(url)
-  u.searchParams.set('_', Date.now().toString(36) + Math.random().toString(36).slice(2, 6))
-  return u.toString()
+  const sep = url.includes('?') ? '&' : '?'
+  return `${url}${sep}_=${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
 }
 
 async function notify (userId, text) {
