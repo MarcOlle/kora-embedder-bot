@@ -27,7 +27,7 @@
   {
     "name": "Instagram",
     "source": "^(www\\.)?instagram\\.com",
-    "targets": ["zzinstagram.com", "kkinstagram.com"]
+    "targets": ["kkinstagram.com", "zzinstagram.com"]
   },
   {
     "name": "YouTube",
