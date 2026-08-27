@@ -3,7 +3,7 @@ const SECRET = ENV_BOT_SECRET // A-Z, a-z, 0-9, _ and -
 const LIST_URL = ENV_LIST_URL
 const WEBHOOK = '/endpoint'
 
-const BOT_VERSION = '2026-08-27.0'
+const BOT_VERSION = '2026-08-27.1'
 const EMBED_TIMEOUT_MS = 15000
 const INLINE_CACHE_TIME = 60
 const MAX_BODY_CHARS = 65536
@@ -119,8 +119,9 @@ async function onInlineQuery (inlineQuery) {
 // Telegram memoizes link previews per exact URL - failed crawls included.
 // Stamp a unique param so every edit forces an uncached crawl of the service.
 function cacheBust (url) {
-  const sep = url.includes('?') ? '&' : '?'
-  return `${url}${sep}_=${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
+  const u = new URL(url)
+  u.searchParams.set('_', Date.now().toString(36) + Math.random().toString(36).slice(2, 6))
+  return u.toString()
 }
 
 async function notify (userId, text) {
@@ -243,26 +244,54 @@ function rewriteUrl (url, sourceRegex, targetHost) {
 
 async function selectTarget (url, sourceRegex, candidates) {
   const probeUrls = new Map(candidates.map(candidate => [candidate, rewriteUrl(url, sourceRegex, candidate).toString()]))
-  // Every candidate gets both probes concurrently; the winner is the first one
-  // in list.json order that passes either check, so service ranking is decided
-  // purely by the order in list.json.
-  const results = await Promise.all(candidates.map(async candidate => {
-    log('Probing: ', probeUrls.get(candidate))
-    const direct = await probeDirectVideoFile(probeUrls.get(candidate))
-    const tags = await probeEmbed(probeUrls.get(candidate))
-    return { candidate, direct, tags }
-  }))
-  const videoWinner = results.find(result => result.direct || result.tags.video)
-  if (videoWinner) {
-    log('Selected target: ', videoWinner.candidate)
-    return videoWinner.candidate
-  }
-  const imageWinner = results.find(result => result.tags.image)
-  if (imageWinner) {
-    log('Image-only fallback: ', imageWinner.candidate)
-    return imageWinner.candidate
-  }
-  return null
+  // Probe all candidates concurrently. A dead/slow target must never block the
+  // rest: we resolve as soon as the highest-priority (list.json order) candidate
+  // that passes either the direct-video or embed check is known and every
+  // candidate of higher priority has settled. Service ranking stays driven by
+  // list.json order, but an unreachable earlier target no longer prevents the
+  // message from being edited with a working one.
+  const settled = []
+  const pending = new Set(candidates)
+  return new Promise((resolve) => {
+    candidates.forEach(candidate => {
+      const probe = async () => {
+        const probeUrl = probeUrls.get(candidate)
+        const [direct, tags] = await Promise.all([
+          probeDirectVideoFile(probeUrl),
+          probeEmbed(probeUrl)
+        ])
+        return { candidate, direct: !!direct, tags: tags || { video: false, image: false } }
+      }
+      probe()
+        .then(result => {
+          settled.push(result)
+          pending.delete(candidate)
+          const winners = settled.filter(r => r.direct || r.tags.video)
+          if (winners.length) {
+            const best = winners.reduce((a, b) =>
+              candidates.indexOf(a.candidate) <= candidates.indexOf(b.candidate) ? a : b)
+            const bestIndex = candidates.indexOf(best.candidate)
+            const higherPending = candidates.slice(0, bestIndex).some(c => pending.has(c))
+            if (!higherPending) {
+              log('Selected target: ', best.candidate)
+              return resolve(best.candidate)
+            }
+          }
+          if (pending.size === 0) {
+            const imageWinner = settled.find(r => r.tags.image)
+            if (imageWinner) {
+              log('Image-only fallback: ', imageWinner.candidate)
+              return resolve(imageWinner.candidate)
+            }
+            return resolve(null)
+          }
+        })
+        .catch(() => {
+          pending.delete(candidate)
+          if (pending.size === 0) resolve(null)
+        })
+    })
+  })
 }
 
 
