@@ -57,8 +57,8 @@ async function onUpdate (update) {
 }
 
 async function onMessage (message) {
-    const {url} = await getFixedURL(message.text)
-    return sendPlainText(message.chat.id, url)
+  const { url } = await getFixedURL(message.text)
+  return sendPlainText(message.chat.id, url)
 }
 
 async function sendPlainText (chatId, text) {
@@ -99,23 +99,27 @@ async function onInlineQuery (inlineQuery) {
     }
     replyMarkup = originalKeyboard(originalURL)
   } catch (e) {
-    log("Instant answer: not a URL or list unavailable: ", e.message || e)
+    console.log('Instant answer fallback:', e.message || e)
   }
-  const results = [({
+
+  const article = {
     type: 'article',
     id: crypto.randomUUID(),
     title: `☞ CLICK TO SEND`,
     description: `v${BOT_VERSION}`,
-    input_message_content: content,
-    // inline keyboard required: without it Telegram omits inline_message_id
-    // in chosen_inline_result, making post-send editing impossible
-    reply_markup: replyMarkup
-  })]
+    input_message_content: content
+  }
+  // inline keyboard required: without it Telegram omits inline_message_id
+  // in chosen_inline_result, making post-send editing impossible.
+  // It must only be included when set: Telegram rejects "reply_markup": null.
+  if (replyMarkup) article.reply_markup = replyMarkup
+  const results = [article]
+
   // Short Telegram-side cache: deduplicates rapid identical queries while keeping
   // post-deploy version-marker staleness under a minute
   const r = await SendInlineQuery(inlineQuery.id, JSON.stringify(results), { cache_time: INLINE_CACHE_TIME })
-console.log('answerInlineQuery:', JSON.stringify(r))
-return r
+  console.log('answerInlineQuery:', JSON.stringify(r))
+  return r
 }
 
 // Instant answer happens in onInlineQuery; here the services are probed after
@@ -136,7 +140,7 @@ async function notify (userId, text) {
   try {
     await sendPlainText(userId, text)
   } catch (e) {
-    log("notify failed: ", e.message || e)
+    log('notify failed: ', e.message || e)
   }
 }
 
@@ -154,10 +158,10 @@ async function onChosenInlineResult (chosen) {
     base = placeholder
     base.keyboard = originalKeyboard(chosen.query)
   } catch (e) {
-    log("Placeholder rebuild failed: ", e.message || e)
+    log('Placeholder rebuild failed: ', e.message || e)
   }
   try {
-    log("Chosen inline result: ", chosen.query)
+    log('Chosen inline result: ', chosen.query)
     const { url, title } = await getFixedURL(chosen.query)
     if (!title || title === 'Embed Link') {
       await notify(userId, '⚠️ probe: no working embed service')
@@ -171,12 +175,12 @@ async function onChosenInlineResult (chosen) {
       await editInlineMessage(chosen.inline_message_id, `${base.text}\n⚠️ edit rejected: ${result.description || 'unknown'}`, base.previewUrl, base.keyboard)
     }
   } catch (e) {
-    log("Failed to resolve/edit embed link: ", e.message || e)
+    log('Failed to resolve/edit embed link: ', e.message || e)
     await notify(userId, `💥 ${String(e.message || e).slice(0, 100)}`)
     try {
       await editInlineMessage(chosen.inline_message_id, `${base.text}\n⚠️ ${String(e.message || e).slice(0, 100)}`, base.previewUrl, base.keyboard)
     } catch (e2) {
-      log("Annotation edit also failed: ", e2.message || e2)
+      log('Annotation edit also failed: ', e2.message || e2)
     }
   }
 }
@@ -219,7 +223,7 @@ function matchEntry (url, json) {
 }
 
 async function getFixedURL (originalURL) {
-  log("Original URL: ", originalURL)
+  log('Original URL: ', originalURL)
   var url = new URL(originalURL)
   const matched = matchEntry(url, await fetchList())
   var title = 'Embed Link'
@@ -228,15 +232,15 @@ async function getFixedURL (originalURL) {
     const candidates = matched.targets || (matched.target ? [matched.target] : [])
     const target = await selectTarget(url, matched.source, candidates)
     if (target) {
-      log("Selected target: ", target)
+      log('Selected target: ', target)
       url = rewriteUrl(url, matched.source, target)
       title = matched.name
     } else {
-      log("No working embed service, returning original URL")
+      log('No working embed service, returning original URL')
     }
   }
 
-  log("Fixed URL: ", url)
+  log('Fixed URL: ', url)
   return {
     url: url.toString(),
     title: title
@@ -301,7 +305,6 @@ async function selectTarget (url, sourceRegex, candidates) {
   })
 }
 
-
 async function fetchWithTimeout (url, options = {}) {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), EMBED_TIMEOUT_MS)
@@ -326,14 +329,14 @@ async function probeDirectVideoFile (url) {
       response.body.cancel()
     }
     if (!response.ok) {
-      log("Direct video file probe status: ", response.status)
+      log('Direct video file probe status: ', response.status)
       return false
     }
     const contentType = response.headers.get('content-type') || ''
-    log("Direct video file probe content-type: ", contentType)
+    log('Direct video file probe content-type: ', contentType)
     return contentType.toLowerCase().startsWith('video/')
   } catch (e) {
-    log("Direct video file probe failed: ", e.message || e)
+    log('Direct video file probe failed: ', e.message || e)
     return false
   }
 }
@@ -346,7 +349,7 @@ async function probeEmbed (probeUrl) {
       headers: { 'User-Agent': CRAWLER_UA }
     })
     if (!response.ok) {
-      log("Probe HTTP status: ", response.status)
+      log('Probe HTTP status: ', response.status)
       return { video: false, image: false }
     }
     const contentType = response.headers.get('content-type') || ''
@@ -354,7 +357,7 @@ async function probeEmbed (probeUrl) {
       if (response.body) {
         response.body.cancel()
       }
-      log("Embed URL is a direct video file: ", probeUrl)
+      log('Embed URL is a direct video file: ', probeUrl)
       return { video: true, image: false }
     }
     if (!response.body) {
@@ -378,14 +381,14 @@ async function probeEmbed (probeUrl) {
       return { video: false, image }
     }
     if (videoType && !videoType.toLowerCase().startsWith('video/')) {
-      log("og:video:type is not a video: ", videoType)
+      log('og:video:type is not a video: ', videoType)
       return { video: false, image }
     }
     const video = await isPlayableVideo(videoUrl)
-    log("Playable video check: ", videoUrl, video)
+    log('Playable video check: ', videoUrl, video)
     return { video, image }
   } catch (e) {
-    log("Probe failed: ", e.message || e)
+    log('Probe failed: ', e.message || e)
     return { video: false, image: false }
   }
 }
@@ -394,7 +397,6 @@ async function isPlayableVideo (videoUrl) {
   const contentType = await probeContentType(videoUrl)
   return !!contentType.toLowerCase().startsWith('video/')
 }
-
 
 async function probeContentType (url) {
   const contentTypeOf = (response) => response.headers.get('content-type') || ''
@@ -408,7 +410,7 @@ async function probeContentType (url) {
     }
     return contentTypeOf(response)
   } catch (e) {
-    log("HEAD probe failed, retrying with GET: ", e.message || e)
+    log('HEAD probe failed, retrying with GET: ', e.message || e)
     try {
       const response = await fetchWithTimeout(url, {
         method: 'GET',
@@ -419,7 +421,7 @@ async function probeContentType (url) {
       }
       return contentTypeOf(response)
     } catch (e2) {
-      log("GET probe failed: ", e2.message || e2)
+      log('GET probe failed: ', e2.message || e2)
       return ''
     }
   }
@@ -462,6 +464,7 @@ async function registerWebhook (event, requestUrl, suffix, secret) {
   }))).json()
   return new Response('ok' in r && r.ok ? 'Ok' : JSON.stringify(r, null, 2))
 }
+
 async function unRegisterWebhook (event) {
   const r = await (await fetch(apiUrl('setWebhook', { url: '' }))).json()
   return new Response('ok' in r && r.ok ? 'Ok' : JSON.stringify(r, null, 2))
