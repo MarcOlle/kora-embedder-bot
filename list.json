@@ -7,7 +7,7 @@
   {
     "name": "X",
     "source": "^(www\\.)?x\\.com",
-    "targets": ["fixupx.com", "fxtwitter.com", "vxtwitter.com"]
+    "targets": ["xcancel.com", "fxtwitter.com", "vxtwitter.com", "fixupx.com"]
   },
   {
     "name": "TikTok",
