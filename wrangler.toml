@@ -5,7 +5,7 @@ compatibility_date = "2026-10-12"
 workers_dev = true
 
 [vars]
-ENV_LIST_URL = "https://github.com/MarcOlle/kora-embedder-bot/blob/09bf16f516b36e0353c217163f8cb34b891ffccb/list.json"
+ENV_LIST_URL = "https://raw.githubusercontent.com/MarcOlle/kora-embedder-bot/main/list.json"
 
 # ...
 [observability.logs]
