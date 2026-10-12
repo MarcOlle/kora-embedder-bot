@@ -1,11 +1,8 @@
 name: Deploy
 on:
-  repository_dispatch:
   push:
     branches:
       - main
-    paths:
-      - '*.js'
 
 jobs:
   deploy:
