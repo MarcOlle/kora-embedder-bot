@@ -42,12 +42,17 @@ async function handleWebhook (event) {
 }
 
 async function onUpdate (update) {
-  if ('message' in update) {
-    await onMessage(update.message)
-  } else if ('inline_query' in update) {
-    await onInlineQuery(update.inline_query)
-  } else if ('chosen_inline_result' in update) {
-    await onChosenInlineResult(update.chosen_inline_result)
+  try {
+    console.log('update:', Object.keys(update).join(','))
+    if ('message' in update) {
+      await onMessage(update.message)
+    } else if ('inline_query' in update) {
+      await onInlineQuery(update.inline_query)
+    } else if ('chosen_inline_result' in update) {
+      await onChosenInlineResult(update.chosen_inline_result)
+    }
+  } catch (e) {
+    console.log('onUpdate error:', e.message || e)
   }
 }
 
@@ -108,7 +113,9 @@ async function onInlineQuery (inlineQuery) {
   })]
   // Short Telegram-side cache: deduplicates rapid identical queries while keeping
   // post-deploy version-marker staleness under a minute
-  return SendInlineQuery(inlineQuery.id, JSON.stringify(results), { cache_time: INLINE_CACHE_TIME })
+  const r = await SendInlineQuery(inlineQuery.id, JSON.stringify(results), { cache_time: INLINE_CACHE_TIME })
+console.log('answerInlineQuery:', JSON.stringify(r))
+return r
 }
 
 // Instant answer happens in onInlineQuery; here the services are probed after
