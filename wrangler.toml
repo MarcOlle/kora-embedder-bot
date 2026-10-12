@@ -7,6 +7,18 @@ workers_dev = true
 [vars]
 ENV_LIST_URL = "https://github.com/MarcOlle/kora-embedder-bot/blob/09bf16f516b36e0353c217163f8cb34b891ffccb/list.json"
 
+# ...
 [observability.logs]
-enabled = false
+enabled = true
+head_sampling_rate = 1
 invocation_logs = true
+persist = true
+
+[observability.traces]
+enabled = false
+head_sampling_rate = 1
+persist = true
+
+[observability.issue_detection]
+enabled = false
+# ...
