@@ -3,12 +3,13 @@ const SECRET = ENV_BOT_SECRET // A-Z, a-z, 0-9, _ and -
 const LIST_URL = ENV_LIST_URL // must return the raw JSON (raw.githubusercontent.com/...), not an HTML page
 const WEBHOOK = '/endpoint'
 
-const BOT_VERSION = '2026-10-12.1'
+const BOT_VERSION = '2026-10-12.2'
 const EMBED_TIMEOUT_MS = 15000
+const PICK_TIMEOUT_MS = 8000 // max wait for provider probes before picking among those that already answered
 const INLINE_CACHE_TIME = 60
 const MAX_BODY_CHARS = 65536
 const CRAWLER_UA = 'TelegramBot (like TwitterBot)'
-// Master debug switch: verbose logging + chosen-event DM notifications
+// Master debug switch: verbose logging
 const DEBUG = false
 function log (...args) {
   if (DEBUG) console.log(...args)
@@ -48,8 +49,6 @@ async function onUpdate (update) {
       await onMessage(update.message)
     } else if ('inline_query' in update) {
       await onInlineQuery(update.inline_query)
-    } else if ('chosen_inline_result' in update) {
-      await onChosenInlineResult(update.chosen_inline_result)
     }
   } catch (e) {
     console.log('onUpdate error:', e.message || e)
@@ -66,25 +65,44 @@ function extractUrl (text) {
   return null
 }
 
+// Link from a message: plain text first, then hyperlinked text (common in forwarded posts)
+function extractUrlFromMessage (message) {
+  const text = message.text || message.caption || ''
+  const fromText = extractUrl(text)
+  if (fromText) return fromText
+  const entities = message.entities || message.caption_entities || []
+  for (const entity of entities) {
+    if (entity.type === 'text_link' && entity.url) return entity.url
+  }
+  return null
+}
+
 function getTargets (entry) {
   return entry.targets || (entry.target ? [entry.target] : [])
 }
 
-// Direct message to the bot: replies with the link fixed by the first available target
+// Direct message to the bot (typed or forwarded): replies with the link fixed by a
+// provider picked at random among the ones that are currently working.
 async function onMessage (message) {
   const chatId = message.chat.id
   const isPrivate = message.chat.type === 'private'
-  const link = extractUrl(message.text || message.caption || '')
+  const link = extractUrlFromMessage(message)
   if (!link) {
     if (isPrivate) {
-      await sendPlainText(chatId, 'Envie um link (TikTok, X/Twitter, Instagram, YouTube, Reddit, Bluesky) e eu devolvo o link com embed.')
+      await sendPlainText(chatId, 'Envie ou encaminhe um link (TikTok, X/Twitter, Instagram, YouTube, Reddit, Bluesky) e eu devolvo o link com embed.')
     }
     return
   }
-  const { url, title } = await getFixedURL(link)
+  const { url, title, matched } = await getFixedURL(link)
+  if (!matched) {
+    if (isPrivate) {
+      await sendPlainText(chatId, 'Esse site não está na lista de provedores.')
+    }
+    return
+  }
   if (title === 'Embed Link') {
     if (isPrivate) {
-      await sendPlainText(chatId, 'Nenhum provedor de embed disponível para esse link agora.')
+      await sendPlainText(chatId, 'Nenhum provedor de embed disponível agora. Tente de novo em instantes.')
     }
     return
   }
@@ -98,23 +116,7 @@ async function sendPlainText (chatId, text) {
   }))).json()
 }
 
-function originalKeyboard (url) {
-  return { inline_keyboard: [[{ text: 'Original', url: url.toString() }]] }
-}
-
-// Placeholder for a query: original link formatted as a clickable platform name
-async function buildPlaceholderContent (query, list) {
-  const url = new URL(query)
-  const matched = matchEntry(url, list || await fetchList())
-  const label = matched ? matched.name : url.hostname
-  return {
-    text: `[${label}](${query})`,
-    previewUrl: query
-  }
-}
-
-// Inline mode: first option resolves automatically (first available target, edited after
-// sending), followed by one option per target in list.json, which inserts that link directly.
+// Inline mode: one option per provider in list.json; picking one inserts that link directly.
 async function onInlineQuery (inlineQuery) {
   const originalURL = extractUrl(inlineQuery.query)
   if (!originalURL) return answerInline(inlineQuery.id, [])
@@ -122,29 +124,9 @@ async function onInlineQuery (inlineQuery) {
   const results = []
   try {
     const url = new URL(originalURL)
-    const list = await fetchList()
-    const matched = matchEntry(url, list)
-    const targets = matched ? getTargets(matched) : []
-    if (matched && targets.length) {
-      const placeholder = await buildPlaceholderContent(originalURL, list)
-      results.push({
-        type: 'article',
-        id: 'auto',
-        title: `⚡ ${matched.name} · Automático`,
-        description: 'Usa o primeiro provedor que estiver funcionando',
-        input_message_content: {
-          message_text: placeholder.text,
-          parse_mode: 'markdown',
-          link_preview_options: {
-            is_disabled: false,
-            url: placeholder.previewUrl
-          }
-        },
-        // inline keyboard required: without it Telegram omits inline_message_id
-        // in chosen_inline_result, making post-send editing impossible
-        reply_markup: originalKeyboard(originalURL)
-      })
-      targets.forEach((target, i) => {
+    const matched = matchEntry(url, await fetchList())
+    if (matched) {
+      getTargets(matched).forEach((target, i) => {
         const fixed = rewriteUrl(url, matched.source, target).toString()
         results.push({
           type: 'article',
@@ -180,87 +162,6 @@ async function answerInline (inlineQueryId, results) {
   })
   console.log('answerInlineQuery:', JSON.stringify(r))
   return r
-}
-
-// Only the "auto" option is probed after sending and then edited to the winner. Failures
-// are annotated onto the message: a fully untouched message means the click
-// event never arrived (enable inline feedback via @BotFather /setinlinefeedback).
-// When DEBUG is on, each chosen-event step is also DM'd to the clicking user
-// Telegram memoizes link previews per exact URL - failed crawls included.
-// Stamp a unique param so every edit forces an uncached crawl of the service.
-function cacheBust (url) {
-  const u = new URL(url)
-  u.searchParams.set('_', Date.now().toString(36) + Math.random().toString(36).slice(2, 6))
-  return u.toString()
-}
-
-async function notify (userId, text) {
-  if (!DEBUG || !userId) return
-  try {
-    await sendPlainText(userId, text)
-  } catch (e) {
-    log('notify failed: ', e.message || e)
-  }
-}
-
-async function onChosenInlineResult (chosen) {
-  const userId = chosen.from && chosen.from.id
-  await notify(userId, `📩 chosen received | result:${chosen.result_id} inline_message_id:${!!chosen.inline_message_id}`)
-  // Target options already carry the final link; only "auto" needs resolving
-  if (chosen.result_id !== 'auto') return
-  const originalURL = extractUrl(chosen.query)
-  if (!originalURL) return
-  if (!chosen.inline_message_id) {
-    await notify(userId, '⚠️ no inline_message_id - cannot edit')
-    return
-  }
-  var base = { text: originalURL, previewUrl: null }
-  try {
-    const placeholder = await buildPlaceholderContent(originalURL)
-    base = placeholder
-    base.keyboard = originalKeyboard(originalURL)
-  } catch (e) {
-    log('Placeholder rebuild failed: ', e.message || e)
-  }
-  try {
-    log('Chosen inline result: ', originalURL)
-    const { url, title } = await getFixedURL(originalURL)
-    if (!title || title === 'Embed Link') {
-      await notify(userId, '⚠️ probe: no working embed service')
-      await editInlineMessage(chosen.inline_message_id, `${base.text}\n⚠️ no working embed service right now`, base.previewUrl, base.keyboard)
-      return
-    }
-    const freshUrl = cacheBust(url)
-    const result = await editInlineMessage(chosen.inline_message_id, `[${title}](${freshUrl})`, freshUrl, base.keyboard)
-    console.log('editMessageText:', JSON.stringify(result))
-    await notify(userId, result.ok ? `✅ edited to ${url}` : `⚠️ edit rejected: ${result.description || 'unknown'}`)
-    if (!result.ok) {
-      await editInlineMessage(chosen.inline_message_id, `${base.text}\n⚠️ edit rejected: ${result.description || 'unknown'}`, base.previewUrl, base.keyboard)
-    }
-  } catch (e) {
-    console.log('Failed to resolve/edit embed link:', e.message || e)
-    await notify(userId, `💥 ${String(e.message || e).slice(0, 100)}`)
-    try {
-      await editInlineMessage(chosen.inline_message_id, `${base.text}\n⚠️ ${String(e.message || e).slice(0, 100)}`, base.previewUrl, base.keyboard)
-    } catch (e2) {
-      log('Annotation edit also failed: ', e2.message || e2)
-    }
-  }
-}
-
-async function editInlineMessage (inlineMessageId, text, url, replyMarkup) {
-  const params = {
-    inline_message_id: inlineMessageId,
-    text,
-    parse_mode: 'markdown',
-    link_preview_options: JSON.stringify({
-      is_disabled: false,
-      url
-    })
-  }
-  // omitting reply_markup strips the button from the edited message
-  if (replyMarkup) params.reply_markup = JSON.stringify(replyMarkup)
-  return (await fetch(apiUrl('editMessageText', params))).json()
 }
 
 // The provider list is read at runtime on every request, so changing list.json
@@ -301,8 +202,7 @@ async function getFixedURL (originalURL) {
   var title = 'Embed Link'
 
   if (matched) {
-    const candidates = getTargets(matched)
-    const target = await selectTarget(url, matched.source, candidates)
+    const target = await pickRandomTarget(url, matched.source, getTargets(matched))
     if (target) {
       log('Selected target: ', target)
       url = rewriteUrl(url, matched.source, target)
@@ -315,7 +215,8 @@ async function getFixedURL (originalURL) {
   log('Fixed URL: ', url)
   return {
     url: url.toString(),
-    title: title
+    title: title,
+    matched: !!matched
   }
 }
 
@@ -325,57 +226,33 @@ function rewriteUrl (url, sourceRegex, targetHost) {
   return rewritten
 }
 
-async function selectTarget (url, sourceRegex, candidates) {
-  const probeUrls = new Map(candidates.map(candidate => [candidate, rewriteUrl(url, sourceRegex, candidate).toString()]))
-  // Probe all candidates concurrently. A dead/slow target must never block the
-  // rest: we resolve as soon as the highest-priority (list.json order) candidate
-  // that passes either the direct-video or embed check is known and every
-  // candidate of higher priority has settled. Service ranking stays driven by
-  // list.json order, but an unreachable earlier target no longer prevents the
-  // message from being edited with a working one.
-  const settled = []
-  const pending = new Set(candidates)
-  return new Promise((resolve) => {
-    if (candidates.length === 0) return resolve(null)
-    candidates.forEach(candidate => {
-      const probe = async () => {
-        const probeUrl = probeUrls.get(candidate)
-        const [direct, tags] = await Promise.all([
-          probeDirectVideoFile(probeUrl),
-          probeEmbed(probeUrl)
-        ])
-        return { candidate, direct: !!direct, tags: tags || { video: false, image: false } }
-      }
-      probe()
-        .then(result => {
-          settled.push(result)
-          pending.delete(candidate)
-          const winners = settled.filter(r => r.direct || r.tags.video)
-          if (winners.length) {
-            const best = winners.reduce((a, b) =>
-              candidates.indexOf(a.candidate) <= candidates.indexOf(b.candidate) ? a : b)
-            const bestIndex = candidates.indexOf(best.candidate)
-            const higherPending = candidates.slice(0, bestIndex).some(c => pending.has(c))
-            if (!higherPending) {
-              log('Selected target: ', best.candidate)
-              return resolve(best.candidate)
-            }
-          }
-          if (pending.size === 0) {
-            const imageWinner = settled.find(r => r.tags.image)
-            if (imageWinner) {
-              log('Image-only fallback: ', imageWinner.candidate)
-              return resolve(imageWinner.candidate)
-            }
-            return resolve(null)
-          }
-        })
-        .catch(() => {
-          pending.delete(candidate)
-          if (pending.size === 0) resolve(null)
-        })
-    })
+// Probes every provider of the entry at the same time and picks one at random among
+// those that serve a playable video (or, if none does, among those that serve an image).
+// Providers that are down or slow are simply left out of the draw; the wait is capped
+// by PICK_TIMEOUT_MS so a dead provider never stalls the reply.
+async function pickRandomTarget (url, sourceRegex, candidates) {
+  const video = []
+  const imageOnly = []
+  const probes = candidates.map(async candidate => {
+    const probeUrl = rewriteUrl(url, sourceRegex, candidate).toString()
+    const [direct, tags] = await Promise.all([
+      probeDirectVideoFile(probeUrl),
+      probeEmbed(probeUrl)
+    ])
+    if (direct || (tags && tags.video)) {
+      video.push(candidate)
+    } else if (tags && tags.image) {
+      imageOnly.push(candidate)
+    }
   })
+  await Promise.race([
+    Promise.allSettled(probes),
+    new Promise(resolve => setTimeout(resolve, PICK_TIMEOUT_MS))
+  ])
+  const pool = video.length ? video : imageOnly
+  log('Working providers: ', pool.join(', ') || '(none)')
+  if (!pool.length) return null
+  return pool[Math.floor(Math.random() * pool.length)]
 }
 
 async function fetchWithTimeout (url, options = {}) {
@@ -532,8 +409,7 @@ async function registerWebhook (event, requestUrl, suffix, secret) {
   const r = await (await fetch(apiUrl('setWebhook', {
     url: webhookUrl,
     secret_token: secret,
-    // explicit list: persisted restrictions would otherwise drop chosen_inline_result
-    allowed_updates: JSON.stringify(['message', 'inline_query', 'chosen_inline_result'])
+    allowed_updates: JSON.stringify(['message', 'inline_query'])
   }))).json()
   return new Response('ok' in r && r.ok ? 'Ok' : JSON.stringify(r, null, 2))
 }
