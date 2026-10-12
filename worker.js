@@ -1,9 +1,9 @@
 const TOKEN = ENV_BOT_TOKEN
 const SECRET = ENV_BOT_SECRET // A-Z, a-z, 0-9, _ and -
-const LIST_URL = ENV_LIST_URL
+const LIST_URL = ENV_LIST_URL // must return the raw JSON (raw.githubusercontent.com/...), not an HTML page
 const WEBHOOK = '/endpoint'
 
-const BOT_VERSION = '2026-08-27.1'
+const BOT_VERSION = '2026-10-12.1'
 const EMBED_TIMEOUT_MS = 15000
 const INLINE_CACHE_TIME = 60
 const MAX_BODY_CHARS = 65536
@@ -43,7 +43,7 @@ async function handleWebhook (event) {
 
 async function onUpdate (update) {
   try {
-    console.log('update:', Object.keys(update).join(','))
+    console.log(`[v${BOT_VERSION}] update:`, Object.keys(update).join(','))
     if ('message' in update) {
       await onMessage(update.message)
     } else if ('inline_query' in update) {
@@ -56,9 +56,39 @@ async function onUpdate (update) {
   }
 }
 
+// Finds the first link in a text. Also accepts a bare domain ("tiktok.com/@x/video/1").
+function extractUrl (text) {
+  if (!text) return null
+  const m = text.match(/https?:\/\/[^\s]+/i)
+  if (m) return m[0]
+  const t = text.trim()
+  if (/^[\w-]+(\.[\w-]+)+(\/\S*)?$/.test(t)) return 'https://' + t
+  return null
+}
+
+function getTargets (entry) {
+  return entry.targets || (entry.target ? [entry.target] : [])
+}
+
+// Direct message to the bot: replies with the link fixed by the first available target
 async function onMessage (message) {
-  const { url } = await getFixedURL(message.text)
-  return sendPlainText(message.chat.id, url)
+  const chatId = message.chat.id
+  const isPrivate = message.chat.type === 'private'
+  const link = extractUrl(message.text || message.caption || '')
+  if (!link) {
+    if (isPrivate) {
+      await sendPlainText(chatId, 'Envie um link (TikTok, X/Twitter, Instagram, YouTube, Reddit, Bluesky) e eu devolvo o link com embed.')
+    }
+    return
+  }
+  const { url, title } = await getFixedURL(link)
+  if (title === 'Embed Link') {
+    if (isPrivate) {
+      await sendPlainText(chatId, 'Nenhum provedor de embed disponível para esse link agora.')
+    }
+    return
+  }
+  return sendPlainText(chatId, url)
 }
 
 async function sendPlainText (chatId, text) {
@@ -73,9 +103,9 @@ function originalKeyboard (url) {
 }
 
 // Placeholder for a query: original link formatted as a clickable platform name
-async function buildPlaceholderContent (query) {
+async function buildPlaceholderContent (query, list) {
   const url = new URL(query)
-  const matched = matchEntry(url, await fetchList())
+  const matched = matchEntry(url, list || await fetchList())
   const label = matched ? matched.name : url.hostname
   return {
     text: `[${label}](${query})`,
@@ -83,47 +113,76 @@ async function buildPlaceholderContent (query) {
   }
 }
 
+// Inline mode: first option resolves automatically (first available target, edited after
+// sending), followed by one option per target in list.json, which inserts that link directly.
 async function onInlineQuery (inlineQuery) {
-  const originalURL = inlineQuery.query
-  var content = { message_text: originalURL }
-  var replyMarkup = null
+  const originalURL = extractUrl(inlineQuery.query)
+  if (!originalURL) return answerInline(inlineQuery.id, [])
+
+  const results = []
   try {
-    const placeholder = await buildPlaceholderContent(originalURL)
-    content = {
-      message_text: placeholder.text,
-      parse_mode: 'markdown',
-      link_preview_options: {
-        is_disabled: false,
-        url: placeholder.previewUrl
-      }
+    const url = new URL(originalURL)
+    const list = await fetchList()
+    const matched = matchEntry(url, list)
+    const targets = matched ? getTargets(matched) : []
+    if (matched && targets.length) {
+      const placeholder = await buildPlaceholderContent(originalURL, list)
+      results.push({
+        type: 'article',
+        id: 'auto',
+        title: `⚡ ${matched.name} · Automático`,
+        description: 'Usa o primeiro provedor que estiver funcionando',
+        input_message_content: {
+          message_text: placeholder.text,
+          parse_mode: 'markdown',
+          link_preview_options: {
+            is_disabled: false,
+            url: placeholder.previewUrl
+          }
+        },
+        // inline keyboard required: without it Telegram omits inline_message_id
+        // in chosen_inline_result, making post-send editing impossible
+        reply_markup: originalKeyboard(originalURL)
+      })
+      targets.forEach((target, i) => {
+        const fixed = rewriteUrl(url, matched.source, target).toString()
+        results.push({
+          type: 'article',
+          id: `t${i}`,
+          title: `${matched.name} → ${target}`,
+          description: fixed,
+          input_message_content: { message_text: fixed }
+        })
+      })
     }
-    replyMarkup = originalKeyboard(originalURL)
   } catch (e) {
-    console.log('Instant answer fallback:', e.message || e)
+    console.log('Inline: could not build options:', e.message || e)
   }
 
-  const article = {
-    type: 'article',
-    id: crypto.randomUUID(),
-    title: `☞ CLICK TO SEND`,
-    description: `v${BOT_VERSION}`,
-    input_message_content: content
+  if (!results.length) {
+    // unsupported domain or list unavailable: still let the user send the original link
+    results.push({
+      type: 'article',
+      id: 'original',
+      title: 'Enviar link original',
+      description: 'Nenhum provedor encontrado para este link',
+      input_message_content: { message_text: originalURL }
+    })
   }
-  // inline keyboard required: without it Telegram omits inline_message_id
-  // in chosen_inline_result, making post-send editing impossible.
-  // It must only be included when set: Telegram rejects "reply_markup": null.
-  if (replyMarkup) article.reply_markup = replyMarkup
-  const results = [article]
+  return answerInline(inlineQuery.id, results)
+}
 
+async function answerInline (inlineQueryId, results) {
   // Short Telegram-side cache: deduplicates rapid identical queries while keeping
-  // post-deploy version-marker staleness under a minute
-  const r = await SendInlineQuery(inlineQuery.id, JSON.stringify(results), { cache_time: INLINE_CACHE_TIME })
+  // list.json changes visible within a minute
+  const r = await SendInlineQuery(inlineQueryId, JSON.stringify(results), {
+    cache_time: results.length ? INLINE_CACHE_TIME : 1
+  })
   console.log('answerInlineQuery:', JSON.stringify(r))
   return r
 }
 
-// Instant answer happens in onInlineQuery; here the services are probed after
-// the message is already sent and the message is edited to the winner. Failures
+// Only the "auto" option is probed after sending and then edited to the winner. Failures
 // are annotated onto the message: a fully untouched message means the click
 // event never arrived (enable inline feedback via @BotFather /setinlinefeedback).
 // When DEBUG is on, each chosen-event step is also DM'd to the clicking user
@@ -146,23 +205,26 @@ async function notify (userId, text) {
 
 async function onChosenInlineResult (chosen) {
   const userId = chosen.from && chosen.from.id
-  await notify(userId, `📩 chosen received | query:${!!chosen.query} inline_message_id:${!!chosen.inline_message_id}`)
-  if (!chosen.query) return
+  await notify(userId, `📩 chosen received | result:${chosen.result_id} inline_message_id:${!!chosen.inline_message_id}`)
+  // Target options already carry the final link; only "auto" needs resolving
+  if (chosen.result_id !== 'auto') return
+  const originalURL = extractUrl(chosen.query)
+  if (!originalURL) return
   if (!chosen.inline_message_id) {
     await notify(userId, '⚠️ no inline_message_id - cannot edit')
     return
   }
-  var base = { text: chosen.query, previewUrl: null }
+  var base = { text: originalURL, previewUrl: null }
   try {
-    const placeholder = await buildPlaceholderContent(chosen.query)
+    const placeholder = await buildPlaceholderContent(originalURL)
     base = placeholder
-    base.keyboard = originalKeyboard(chosen.query)
+    base.keyboard = originalKeyboard(originalURL)
   } catch (e) {
     log('Placeholder rebuild failed: ', e.message || e)
   }
   try {
-    log('Chosen inline result: ', chosen.query)
-    const { url, title } = await getFixedURL(chosen.query)
+    log('Chosen inline result: ', originalURL)
+    const { url, title } = await getFixedURL(originalURL)
     if (!title || title === 'Embed Link') {
       await notify(userId, '⚠️ probe: no working embed service')
       await editInlineMessage(chosen.inline_message_id, `${base.text}\n⚠️ no working embed service right now`, base.previewUrl, base.keyboard)
@@ -170,12 +232,13 @@ async function onChosenInlineResult (chosen) {
     }
     const freshUrl = cacheBust(url)
     const result = await editInlineMessage(chosen.inline_message_id, `[${title}](${freshUrl})`, freshUrl, base.keyboard)
+    console.log('editMessageText:', JSON.stringify(result))
     await notify(userId, result.ok ? `✅ edited to ${url}` : `⚠️ edit rejected: ${result.description || 'unknown'}`)
     if (!result.ok) {
       await editInlineMessage(chosen.inline_message_id, `${base.text}\n⚠️ edit rejected: ${result.description || 'unknown'}`, base.previewUrl, base.keyboard)
     }
   } catch (e) {
-    log('Failed to resolve/edit embed link: ', e.message || e)
+    console.log('Failed to resolve/edit embed link:', e.message || e)
     await notify(userId, `💥 ${String(e.message || e).slice(0, 100)}`)
     try {
       await editInlineMessage(chosen.inline_message_id, `${base.text}\n⚠️ ${String(e.message || e).slice(0, 100)}`, base.previewUrl, base.keyboard)
@@ -200,12 +263,21 @@ async function editInlineMessage (inlineMessageId, text, url, replyMarkup) {
   return (await fetch(apiUrl('editMessageText', params))).json()
 }
 
+// The provider list is read at runtime on every request, so changing list.json
+// (and nothing else) is enough to switch providers - no redeploy needed.
 async function fetchList () {
   const response = await fetch(LIST_URL)
   if (!response.ok) {
-    throw new Error(`Fetch: ${response.status}`)
+    throw new Error(`list.json fetch failed: ${response.status}`)
   }
-  return response.json()
+  const text = await response.text()
+  try {
+    const json = JSON.parse(text)
+    if (!Array.isArray(json)) throw new Error('not an array')
+    return json
+  } catch (e) {
+    throw new Error(`ENV_LIST_URL did not return valid JSON (starts with: ${text.slice(0, 30).replace(/\s+/g, ' ')})`)
+  }
 }
 
 function matchEntry (url, json) {
@@ -229,7 +301,7 @@ async function getFixedURL (originalURL) {
   var title = 'Embed Link'
 
   if (matched) {
-    const candidates = matched.targets || (matched.target ? [matched.target] : [])
+    const candidates = getTargets(matched)
     const target = await selectTarget(url, matched.source, candidates)
     if (target) {
       log('Selected target: ', target)
@@ -264,6 +336,7 @@ async function selectTarget (url, sourceRegex, candidates) {
   const settled = []
   const pending = new Set(candidates)
   return new Promise((resolve) => {
+    if (candidates.length === 0) return resolve(null)
     candidates.forEach(candidate => {
       const probe = async () => {
         const probeUrl = probeUrls.get(candidate)
