@@ -3,9 +3,9 @@ const SECRET = ENV_BOT_SECRET // A-Z, a-z, 0-9, _ and -
 const LIST_URL = ENV_LIST_URL // must return the raw JSON (raw.githubusercontent.com/...), not an HTML page
 const WEBHOOK = '/endpoint'
 
-const BOT_VERSION = '2026-10-12.2'
+const BOT_VERSION = '2026-10-12.3'
 const EMBED_TIMEOUT_MS = 15000
-const PICK_TIMEOUT_MS = 8000 // max wait for provider probes before picking among those that already answered
+const PICK_TIMEOUT_MS = 8000 // max wait for a working provider before giving up (or using an image-only one)
 const INLINE_CACHE_TIME = 60
 const MAX_BODY_CHARS = 65536
 const CRAWLER_UA = 'TelegramBot (like TwitterBot)'
@@ -82,7 +82,7 @@ function getTargets (entry) {
 }
 
 // Direct message to the bot (typed or forwarded): replies with the link fixed by a
-// provider picked at random among the ones that are currently working.
+// fastest provider that is currently working.
 async function onMessage (message) {
   const chatId = message.chat.id
   const isPrivate = message.chat.type === 'private'
@@ -202,7 +202,7 @@ async function getFixedURL (originalURL) {
   var title = 'Embed Link'
 
   if (matched) {
-    const target = await pickRandomTarget(url, matched.source, getTargets(matched))
+    const target = await pickFastestTarget(url, matched.source, getTargets(matched))
     if (target) {
       log('Selected target: ', target)
       url = rewriteUrl(url, matched.source, target)
@@ -226,33 +226,44 @@ function rewriteUrl (url, sourceRegex, targetHost) {
   return rewritten
 }
 
-// Probes every provider of the entry at the same time and picks one at random among
-// those that serve a playable video (or, if none does, among those that serve an image).
-// Providers that are down or slow are simply left out of the draw; the wait is capped
-// by PICK_TIMEOUT_MS so a dead provider never stalls the reply.
-async function pickRandomTarget (url, sourceRegex, candidates) {
-  const video = []
-  const imageOnly = []
-  const probes = candidates.map(async candidate => {
-    const probeUrl = rewriteUrl(url, sourceRegex, candidate).toString()
-    const [direct, tags] = await Promise.all([
-      probeDirectVideoFile(probeUrl),
-      probeEmbed(probeUrl)
-    ])
-    if (direct || (tags && tags.video)) {
-      video.push(candidate)
-    } else if (tags && tags.image) {
-      imageOnly.push(candidate)
+// Probes every provider of the entry at the same time and returns the first one that
+// proves it serves a playable video (the fastest working provider). If none does within
+// PICK_TIMEOUT_MS, it falls back to a provider that only serves an image, otherwise null.
+function pickFastestTarget (url, sourceRegex, candidates) {
+  return new Promise(resolve => {
+    if (!candidates.length) return resolve(null)
+    var pending = candidates.length
+    var imageFallback = null
+    var done = false
+    var timer = null
+    const finish = (value) => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      resolve(value)
     }
+    timer = setTimeout(() => finish(imageFallback), PICK_TIMEOUT_MS)
+    candidates.forEach(candidate => {
+      (async () => {
+        const probeUrl = rewriteUrl(url, sourceRegex, candidate).toString()
+        // Resolve as soon as either probe confirms a video; don't wait for the slower one
+        const directProbe = probeDirectVideoFile(probeUrl).then(ok => {
+          if (ok) finish(candidate)
+        })
+        const embedProbe = probeEmbed(probeUrl).then(tags => {
+          if (tags && tags.video) finish(candidate)
+          return tags
+        })
+        const [, tags] = await Promise.all([directProbe, embedProbe])
+        if (tags && tags.image && !imageFallback) imageFallback = candidate
+      })()
+        .catch(() => {})
+        .finally(() => {
+          pending--
+          if (pending === 0) finish(imageFallback)
+        })
+    })
   })
-  await Promise.race([
-    Promise.allSettled(probes),
-    new Promise(resolve => setTimeout(resolve, PICK_TIMEOUT_MS))
-  ])
-  const pool = video.length ? video : imageOnly
-  log('Working providers: ', pool.join(', ') || '(none)')
-  if (!pool.length) return null
-  return pool[Math.floor(Math.random() * pool.length)]
 }
 
 async function fetchWithTimeout (url, options = {}) {
