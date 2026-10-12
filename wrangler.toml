@@ -1,7 +1,7 @@
 # wrangler.toml
 name = "kora-embedder-bot"
 main = "worker.js"
-compatibility_date = "2026-08-01"
+compatibility_date = "2026-10-12"
 workers_dev = true
 
 [vars]
