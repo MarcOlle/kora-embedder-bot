@@ -4,4 +4,4 @@ compatibility_date = "2026-08-01"
 workers_dev = true
 
 [vars]
-ENV_LIST_URL = "https://raw.githubusercontent.com/kerivin/media-embedder-bot/refs/heads/main/list.json"
+ENV_LIST_URL = "https://github.com/MarcOlle/kora-embedder-bot/blob/09bf16f516b36e0353c217163f8cb34b891ffccb/list.json"
