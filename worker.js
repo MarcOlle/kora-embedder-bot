@@ -4,8 +4,8 @@ const LIST_URL = ENV_LIST_URL // must return the raw JSON (raw.githubusercontent
 const WEBHOOK = '/endpoint'
 
 const BOT_VERSION = '2026-10-12.3'
-const EMBED_TIMEOUT_MS = 15000
-const PICK_TIMEOUT_MS = 8000 // max wait for a working provider before giving up (or using an image-only one)
+const EMBED_TIMEOUT_MS = 25000
+const PICK_TIMEOUT_MS = 18000 // max wait for a working provider before giving up (or using an image-only one)
 const INLINE_CACHE_TIME = 60
 const MAX_BODY_CHARS = 65536
 const CRAWLER_UA = 'TelegramBot (like TwitterBot)'
