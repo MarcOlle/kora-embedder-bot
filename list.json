@@ -30,13 +30,8 @@
     "targets": ["kkinstagram.com", "zzinstagram.com"]
   },
   {
-    "name": "YouTube Standard",
-    "source": "^(www\\.)?youtube\\.com",
-    "targets": ["koutu.be", "koutube.com"]
-  },
-  {
-    "name": "YouTube Short (youtu.be)",
-    "source": "^youtu\\.be/([a-zA-Z0-9_-]+)",
+    "name": "YouTube",
+    "source": "^(www\\.)?((youtube\\.com)|(youtu\\.be))",
     "targets": ["koutu.be"]
   }
 ]
