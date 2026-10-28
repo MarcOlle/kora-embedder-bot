@@ -7,7 +7,7 @@
   {
     "name": "X",
     "source": "^(www\\.)?x\\.com",
-    "targets": ["xcancel.com", "fxtwitter.com", "vxtwitter.com", "fixupx.com"]
+    "targets": ["xcancel.com", "fxtwitter.com", "fixupx.com"]
   },
   {
     "name": "TikTok",
@@ -30,8 +30,13 @@
     "targets": ["kkinstagram.com", "zzinstagram.com"]
   },
   {
-    "name": "YouTube",
-    "source": "^(www\\.)?((youtube\\.com)|(youtu\\.be))",
-    "targets": ["koutu.be"]
+    "name": "YouTube Standard",
+    "source": "^(www\\.)?youtube\\.com",
+    "targets": ["koutu.be", "fixyoutube.com"]
+  },
+  {
+    "name": "YouTube Short (youtu.be)",
+    "source": "^youtu\\.be/([a-zA-Z0-9_-]+)",
+    "targets": ["koutu.be", "fixyoutube.com/watch?v=$1"]
   }
 ]
