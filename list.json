@@ -27,7 +27,7 @@
   {
     "name": "Instagram",
     "source": "^(www\\.)?instagram\\.com",
-    "targets": ["oginstagram.com", "g.oginstagram.com", "kkclip.com", "zzinstagram.com", "d.oginstagram.com", "hhinstagram.com", "kirkinstagram.com"]
+    "targets": ["oginstagram.com", "g.oginstagram.com", "kkinstagram.com", "zzinstagram.com", "d.oginstagram.com", "hhinstagram.com", "kirkinstagram.com"]
   },
   {
     "name": "YouTube",
