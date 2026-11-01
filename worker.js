@@ -47,6 +47,8 @@ async function onUpdate (update) {
     console.log(`[v${BOT_VERSION}] update:`, Object.keys(update).join(','))
     if ('message' in update) {
       await onMessage(update.message)
+    } else if ('callback_query' in update) {
+      await onCallbackQuery(update.callback_query)
     } else if ('inline_query' in update) {
       await onInlineQuery(update.inline_query)
     }
@@ -93,7 +95,7 @@ async function onMessage (message) {
     }
     return
   }
-  const { url, title, matched } = await getFixedURL(link)
+  const { url, title, matched, target, entry } = await getFixedURL(link)
   if (!matched) {
     if (isPrivate) {
       await sendPlainText(chatId, 'Esse site não está na lista de provedores.')
@@ -105,6 +107,14 @@ async function onMessage (message) {
       await sendPlainText(chatId, 'Nenhum provedor de embed disponível agora. Tente de novo em instantes.')
     }
     return
+  }
+   if (isPrivate && entry && target) {
+    const mask = 1 << getTargets(entry).indexOf(target)
+    return (await fetch(apiUrl('sendMessage', {
+      chat_id: chatId,
+      text: url,
+      reply_markup: JSON.stringify(mainKeyboard(mask))
+    }))).json()
   }
   return sendPlainText(chatId, url)
 }
@@ -196,28 +206,20 @@ function matchEntry (url, json) {
 }
 
 async function getFixedURL (originalURL) {
-  log('Original URL: ', originalURL)
   var url = new URL(originalURL)
   const matched = matchEntry(url, await fetchList())
   var title = 'Embed Link'
+  var target = null
 
   if (matched) {
-    const target = await pickFastestTarget(url, matched.source, getTargets(matched))
+    target = await pickFastestTarget(url, matched.source, getTargets(matched))
     if (target) {
-      log('Selected target: ', target)
       url = rewriteUrl(url, matched.source, target)
       title = matched.name
-    } else {
-      log('No working embed service, returning original URL')
     }
   }
 
-  log('Fixed URL: ', url)
-  return {
-    url: url.toString(),
-    title: title,
-    matched: !!matched
-  }
+  return { url: url.toString(), title, matched: !!matched, target, entry: matched }
 }
 
 function rewriteUrl (url, sourceRegex, targetHost) {
@@ -420,7 +422,7 @@ async function registerWebhook (event, requestUrl, suffix, secret) {
   const r = await (await fetch(apiUrl('setWebhook', {
     url: webhookUrl,
     secret_token: secret,
-    allowed_updates: JSON.stringify(['message', 'inline_query'])
+    allowed_updates: JSON.stringify(['message', 'inline_query', 'callback_query'])
   }))).json()
   return new Response('ok' in r && r.ok ? 'Ok' : JSON.stringify(r, null, 2))
 }
@@ -436,4 +438,100 @@ function apiUrl (methodName, params = null) {
     query = '?' + new URLSearchParams(params).toString()
   }
   return `https://api.telegram.org/bot${TOKEN}/${methodName}${query}`
+}
+
+// "n:<mask>" carries a bitmask of providers already tried, so repeated presses
+// walk down the ranking (2nd fastest, 3rd fastest...) instead of flipping back and forth.
+function mainKeyboard (mask) {
+  return { inline_keyboard: [[
+    { text: '⏭ Próximo provedor', callback_data: `n:${mask}` },
+    { text: '📋 Escolher provedor', callback_data: 'p' }
+  ]] }
+}
+
+function pickKeyboard (targets, current) {
+  const rows = targets.map((t, i) => [{ text: (i === current ? '✓ ' : '') + t, callback_data: `s:${i}` }])
+  rows.push([{ text: '⬅ Voltar', callback_data: 'b' }])
+  return { inline_keyboard: rows }
+}
+
+function withHost (url, host) {
+  const u = new URL(url.toString())
+  u.hostname = host
+  return u.toString()
+}
+
+function escapeRegex (s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+async function answerCallback (id, text) {
+  const params = { callback_query_id: id }
+  if (text) params.text = text
+  return (await fetch(apiUrl('answerCallbackQuery', params))).json()
+}
+
+async function editMessage (chatId, messageId, text, markup) {
+  return (await fetch(apiUrl('editMessageText', {
+    chat_id: chatId, message_id: messageId, text, reply_markup: JSON.stringify(markup)
+  }))).json()
+}
+
+async function editMarkup (chatId, messageId, markup) {
+  return (await fetch(apiUrl('editMessageReplyMarkup', {
+    chat_id: chatId, message_id: messageId, reply_markup: JSON.stringify(markup)
+  }))).json()
+}
+
+async function onCallbackQuery (cb) {
+  const msg = cb.message
+  if (!msg) return
+  const chatId = msg.chat.id
+  const messageId = msg.message_id
+  const data = cb.data || ''
+
+  const link = extractUrl(msg.text)
+  if (!link) return answerCallback(cb.id, 'Link não encontrado.')
+  const url = new URL(link)
+  const entry = (await fetchList()).find(e => getTargets(e).includes(url.hostname))
+  if (!entry) return answerCallback(cb.id, 'Provedor desconhecido.')
+  const targets = getTargets(entry)
+  const current = targets.indexOf(url.hostname)
+
+  if (data === 'p') {
+    await answerCallback(cb.id)
+    return editMarkup(chatId, messageId, pickKeyboard(targets, current))
+  }
+
+  if (data === 'b') {
+    await answerCallback(cb.id)
+    return editMarkup(chatId, messageId, mainKeyboard(1 << current))
+  }
+
+  if (data.startsWith('s:')) {
+    const idx = parseInt(data.slice(2), 10)
+    if (!(idx >= 0 && idx < targets.length)) return answerCallback(cb.id, 'Opção inválida.')
+    await answerCallback(cb.id)
+    if (idx === current) return editMarkup(chatId, messageId, mainKeyboard(1 << current))
+    return editMessage(chatId, messageId, withHost(url, targets[idx]), mainKeyboard(1 << idx))
+  }
+
+  if (data.startsWith('n:')) {
+    var mask = (parseInt(data.slice(2), 10) || 0) | (1 << current)
+    var candidates = targets.filter((t, i) => !(mask & (1 << i)))
+    if (!candidates.length) {            // tried them all: start the cycle again
+      mask = 1 << current
+      candidates = targets.filter((t, i) => i !== current)
+    }
+    if (!candidates.length) return answerCallback(cb.id, 'Só existe um provedor para este site.')
+
+    await answerCallback(cb.id, 'Testando provedores…')
+    // current host is already the "target", so use it as the regex to be replaced
+    const next = await pickFastestTarget(url, '^' + escapeRegex(url.hostname) + '$', candidates)
+    if (!next) return sendPlainText(chatId, 'Nenhum outro provedor respondeu agora. Use "Escolher provedor" para forçar um.')
+    mask |= 1 << targets.indexOf(next)
+    return editMessage(chatId, messageId, withHost(url, next), mainKeyboard(mask))
+  }
+
+  return answerCallback(cb.id)
 }
