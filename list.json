@@ -33,5 +33,11 @@
     "name": "YouTube",
     "source": "^(www\\.)?((youtube\\.com)|(youtu\\.be))",
     "targets": ["koutu.be"]
+  },
+  {
+  "name": "Facebook",
+  "source": "^(www\\.)?(((m\\.|web\\.)?facebook\\.com)|(fb\\.watch)|(fb\\.me))",
+  "targets": ["facebed.com"]
+ 
   }
 ]
