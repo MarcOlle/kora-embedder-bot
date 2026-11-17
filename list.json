@@ -1,4 +1,4 @@
-[
+
   {
     "name": "Twitter",
     "source": "^(www\\.)?twitter\\.com",
@@ -37,7 +37,7 @@
   {
   "name": "Facebook",
   "source": "^(www\\.)?(((m\\.|web\\.)?facebook\\.com)|(fb\\.watch)|(fb\\.me))",
-  "targets": ["facebed.com"]
+  "targets": ["facebed.com", "facecot.com"]
  
   }
 ]
